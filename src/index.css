@@ -1,0 +1,7 @@
+@import "tailwindcss";
+
+/* หากมีการเรียกใช้ฟอนต์ Sarabun หรือฟอนต์พิเศษ ต้องประกาศที่นี่ */
+@theme {
+  --font-sans: "Sarabun", ui-sans-serif, system-ui;
+  --color-primary: #f97316; /* สีส้มที่คุณต้องการ */
+} 
