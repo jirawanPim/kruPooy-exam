@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { db, auth } from '../firebase';
 import { doc, onSnapshot, collection, updateDoc, deleteDoc, getDoc, serverTimestamp, query, getDocs, addDoc, setDoc } from 'firebase/firestore';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
+import { usePopup } from '../components/PopupProvider';
 import { 
   LayoutDashboard, BookOpen, Users, Edit3, LogOut, 
   ShieldAlert, Timer, ChevronLeft, Trash2, Zap, Sparkles, 
@@ -14,6 +15,7 @@ import {
 const LiveMonitor = () => {
   const { roomId } = useParams();
   const navigate = useNavigate();
+  const { showAlert, showConfirm } = usePopup();
   const [user, setUser] = useState(null);
   const [room, setRoom] = useState(null);
   const [exam, setExam] = useState(null);
@@ -145,13 +147,21 @@ const LiveMonitor = () => {
 
   // --- 2. Actions ---
   const handleStartExam = async () => {
-    if (window.confirm("ยืนยันการ 'เริ่มสอบ'? \nระบบจะเปิดให้นักเรียนทำข้อสอบทันที")) {
+    const isConfirm = await showConfirm(
+      "ยืนยันการ 'เริ่มสอบ'?",
+      "ระบบจะเปิดให้นักเรียนทำข้อสอบทันที"
+    );
+    if (isConfirm) {
       await updateDoc(doc(db, 'rooms', roomId), { status: 'started', startTime: serverTimestamp() });
     }
   };
 
   const handleFinishExam = async () => {
-    if (window.confirm("ยืนยันการ 'จบการสอบ'? \nนักเรียนทุกคนจะถูกบังคับส่งข้อสอบ")) {
+    const isConfirm = await showConfirm(
+      "ยืนยันการ 'จบการสอบ'?",
+      "นักเรียนทุกคนจะถูกบังคับส่งข้อสอบ"
+    );
+    if (isConfirm) {
       try {
         // 1. อัปเดตสถานะห้องเป็นจบการสอบ
         await updateDoc(doc(db, 'rooms', roomId), { 
@@ -160,16 +170,20 @@ const LiveMonitor = () => {
           archived: false // ไม่ archive ให้ยังคงข้อมูลไว้สำหรับ RoomResult
         });
 
-        alert('✅ จบการสอบเรียบร้อยแล้ว!');
+        await showAlert('จบการสอบเรียบร้อยแล้ว!', 'success');
       } catch (error) {
         console.error('Error finishing exam:', error);
-        alert('❌ เกิดข้อผิดพลาดในการจบการสอบ: ' + error.message);
+        await showAlert('เกิดข้อผิดพลาดในการจบการสอบ: ' + error.message, 'error');
       }
     }
   };
 
   const handleCloseAndSaveExam = async () => {
-    if (window.confirm("ยืนยันการ 'ปิดและบันทึกผลสอบ'? \nห้องสอบจะถูกปิดและข้อมูลจะถูกบันทึกไปยังหน้าผลการสอบ")) {
+    const isConfirm = await showConfirm(
+      "ยืนยันการ 'ปิดและบันทึกผลสอบ'?",
+      "ห้องสอบจะถูกปิดและข้อมูลจะถูกบันทึกไปยังหน้าผลการสอบ"
+    );
+    if (isConfirm) {
       try {
         // 1. ดึงข้อมูลนักเรียนทั้งหมดเพื่อเก็บไปยัง RoomResult
         const attendanceQuery = query(collection(db, `rooms/${roomId}/attendance`));
@@ -179,63 +193,47 @@ const LiveMonitor = () => {
           ...doc.data()
         }));
 
-        // 2. สร้างชื่อ collection ใหม่ตามโครงสร้าง: ชื่อข้อสอบ+วันที่จัดสอบ
-        const safeTitle = exam?.title ? exam.title.replace(/[.#$/\[\]]/g, '') : 'Untitled';
-        const examDate = new Date().toLocaleDateString('th-TH').replace(/\//g, '-');
-        const collectionName = `${safeTitle}_${examDate}`; // ชื่อโฟลเดอร์แม่
-        
-        // 3. สร้างข้อมูลห้องสอบใน collection ใหม่
+        // 2. สร้างข้อมูลห้องสอบ (Flat Structure - 1 document = 1 session)
         const roomData = {
+          id: roomId,
           roomId: roomId,
           examId: room.examId,
           examTitle: exam.title,
+          subject: exam?.subject || '-',
+          grade: exam?.grade || '-',
           targetClass: room.targetClass,
           roomCode: room.roomCode,
           finishedAt: serverTimestamp(),
           totalStudents: studentsData.length,
           submittedStudents: studentsData.filter(s => s.status === 'submitted').length,
           createdAt: room.createdAt,
+          examDateStr: new Date().toLocaleDateString('th-TH').replace(/\//g, '-'), // วันที่สอบ
           endTime: serverTimestamp()
         };
 
-        // 4. สร้าง document หลักใน exam_results พร้อมข้อมูล
-        const collectionRef = doc(db, 'exam_results', collectionName);
-        await setDoc(collectionRef, {
-          name: collectionName,
-          subject: exam?.subject || '-',
-          grade: exam?.grade || '-',
-          createdAt: serverTimestamp() // ใส่เวลาที่สร้าง
-        });
-
-        // 5. บันทึกข้อมูลห้องสอบไปยัง subcollection 'rooms'
-        const roomResultRef = doc(db, 'exam_results', collectionName, 'rooms', roomId);
-        console.log('📍 DEBUG: Saving to path:', `exam_results/${collectionName}/rooms/${roomId}`);
-        console.log('📍 DEBUG: Room data:', roomData);
+        // 3. บันทึกข้อมูลห้องสอบไปยังคอลเลกชัน 'exam_results' ตรงๆ (Flat)
+        const roomResultRef = doc(db, 'exam_results', roomId);
+        console.log('📍 DEBUG (Flat): Saving to path:', `exam_results/${roomId}`);
         await setDoc(roomResultRef, roomData);
 
-        // 6. บันทึกข้อมูลนักเรียนไปยัง subcollection 'students'
-        console.log(`📍 DEBUG: Saving ${studentsData.length} students...`);
+        // 4. บันทึกข้อมูลนักเรียนไปยัง subcollection 'students' ใต้ roomResultRef
+        console.log(`📍 DEBUG (Flat): Saving ${studentsData.length} students...`);
         for (const student of studentsData) {
-          const studentRef = doc(db, 'exam_results', collectionName, 'rooms', roomId, 'students', student.id);
-          console.log('📍 DEBUG: Saving student:', student.id, student.name);
+          const studentRef = doc(db, 'exam_results', roomId, 'students', student.id);
+          console.log('📍 DEBUG (Flat): Saving student:', student.id, student.name);
           await setDoc(studentRef, student);
         }
-        
-        // DEBUG: ตรวจสอบว่าบันทึกสำเร็จจริงๆ
-        console.log('📍 DEBUG: Verifying saved data...');
-        const verifyRoom = await getDoc(roomResultRef);
-        console.log('📍 DEBUG: Room saved successfully:', verifyRoom.exists());
 
-        // 6. ลบห้องสอบจาก collection 'rooms' เพื่อไม่ให้โชว์ใน Dashboard
+        // 5. ลบห้องสอบจาก collection 'rooms' เพื่อไม่ให้โชว์ใน Dashboard
         await deleteDoc(doc(db, 'rooms', roomId));
 
-        alert('✅ ปิดและบันทึกผลสอบเรียบร้อยแล้ว!');
+        await showAlert('ปิดและบันทึกผลสอบเรียบร้อยแล้ว!', 'success');
         
-        // 7. นำทางไปหน้า RoomResult
+        // 6. นำทางไปหน้า RoomResult
         navigate('/room-result');
       } catch (error) {
         console.error('Error closing and saving exam:', error);
-        alert('❌ เกิดข้อผิดพลาด: ' + error.message);
+        await showAlert('เกิดข้อผิดพลาด: ' + error.message, 'error');
       }
     }
   };
@@ -246,24 +244,33 @@ const LiveMonitor = () => {
       ? "ยืนยันการล็อกห้อง? นักเรียนจะไม่สามารถเข้าห้องได้" 
       : "ยืนยันการปลดล็อกห้อง? นักเรียนสามารถเข้าห้องได้";
     
-    if (window.confirm(confirmMsg)) {
+    const isConfirm = await showConfirm(newLockStatus ? "ยืนยันการล็อกห้อง?" : "ยืนยันการปลดล็อกห้อง?", confirmMsg);
+    if (isConfirm) {
       try {
         await updateDoc(doc(db, 'rooms', roomId), { isLocked: newLockStatus });
       } catch (error) {
         console.error('Error toggling lock:', error);
-        alert('❌ เกิดข้อผิดพลาด: ' + error.message);
+        await showAlert('เกิดข้อผิดพลาด: ' + error.message, 'error');
       }
     }
   };
 
   const handleKickStudent = async (studentId, studentName) => {
-    if (window.confirm(`ต้องการเชิญ '${studentName}' ออกจากการสอบหรือไม่?`)) {
+    const isConfirm = await showConfirm(
+      "ยืนยันการเชิญนักเรียนออก?",
+      `ต้องการเชิญ '${studentName}' ออกจากการสอบหรือไม่?`
+    );
+    if (isConfirm) {
       await updateDoc(doc(db, `rooms/${roomId}/attendance/${studentId}`), { status: 'kicked' });
     }
   };
 
   const handleDeleteRoom = async () => {
-    if (window.confirm("⚠️ ลบห้องสอบนี้ถาวร? ข้อมูลทั้งหมดจะหายไป!")) {
+    const isConfirm = await showConfirm(
+      "ลบห้องสอบนี้ถาวร?",
+      "⚠️ ข้อมูลทั้งหมดรวมถึงประวัติการเข้าเรียนจะสูญหายทันทีและไม่สามารถกู้คืนได้!"
+    );
+    if (isConfirm) {
       await deleteDoc(doc(db, 'rooms', roomId));
       navigate('/dashboard');
     }
@@ -292,10 +299,10 @@ const LiveMonitor = () => {
       });
       setEditingStudent(null);
       setEditScores({});
-      alert('✅ บันทึกคะแนนสำเร็จ');
+      await showAlert('บันทึกคะแนนสำเร็จ', 'success');
     } catch (error) {
       console.error('Error saving scores:', error);
-      alert('❌ เกิดข้อผิดพลาด: ' + error.message);
+      await showAlert('เกิดข้อผิดพลาด: ' + error.message, 'error');
     }
   };
 

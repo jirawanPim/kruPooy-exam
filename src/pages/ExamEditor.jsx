@@ -4,12 +4,13 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { db, auth } from '../firebase';
 import { doc, getDoc, setDoc, collection, serverTimestamp } from 'firebase/firestore';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
+import { usePopup } from '../components/PopupProvider';
 import { 
   LayoutDashboard, LogOut, Plus, Trash2, Zap, Save, 
   Upload, CheckCircle2, 
   AlignLeft, List, ShieldCheck, BookOpen, GraduationCap, 
   Edit3, Loader2, PlusCircle, MinusCircle, Award, FileSpreadsheet,
-  Users, ChevronLeft, ChevronRight, Activity
+  Users, ChevronLeft, ChevronRight, Activity, FileText
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
@@ -17,6 +18,7 @@ const ExamEditor = () => {
   const { examId } = useParams();
   const navigate = useNavigate();
   const location = useLocation();
+  const { showAlert, showConfirm } = usePopup();
   const fileInputRef = useRef(null);
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -72,9 +74,9 @@ const ExamEditor = () => {
     }
   }, [examId, user]);
 
-  const handleExportExcel = () => {
+  const handleExportExcel = async () => {
     const mcqQuestions = questions.filter(q => q.type === 'multiple');
-    if (mcqQuestions.length === 0) return alert("ไม่พบข้อสอบปรนัยสำหรับ Export");
+    if (mcqQuestions.length === 0) return await showAlert("ไม่พบข้อสอบปรนัยสำหรับ Export", "warning");
     const exportData = mcqQuestions.map((q, idx) => ({
       'ข้อที่': idx + 1, 'โจทย์': q.question, 'คะแนน': q.maxScore,
       'ตัวเลือก A': q.options[0], 'ตัวเลือก B': q.options[1], 'ตัวเลือก C': q.options[2], 'ตัวเลือก D': q.options[3],
@@ -90,14 +92,14 @@ const ExamEditor = () => {
     const file = e.target.files[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = (evt) => {
+    reader.onload = async (evt) => {
       try {
         const wb = XLSX.read(evt.target.result, { type: 'binary' });
         const ws = wb.Sheets[wb.SheetNames[0]];
         const data = XLSX.utils.sheet_to_json(ws);
         
         if (data.length === 0) {
-          alert("❌ ไฟล์ Excel ว่างเปล่า");
+          await showAlert("ไฟล์ Excel ว่างเปล่า", "error");
           return;
         }
 
@@ -105,7 +107,6 @@ const ExamEditor = () => {
         console.log("🔍 Headers:", headers);
         console.log("📄 Row 1:", data[0]);
 
-        // ค้นหา keys - ลองตรง key โดยตรง หรือค้นหาด้วย regex
         const getKey = (keywords) => {
           return headers.find(h => {
             const hLower = h.trim();
@@ -124,8 +125,7 @@ const ExamEditor = () => {
         console.log("🔑 Keys ที่พบ:", { questionKey, scoreKey, answerKey, optionAKey, optionBKey, optionCKey, optionDKey });
 
         if (!questionKey) {
-          alert("❌ ไม่พบคอลัมน์ 'โจทย์'");
-          console.log("Available headers:", headers);
+          await showAlert("ไม่พบคอลัมน์ 'โจทย์'", "error", "กรุณาตรวจสอบว่ามีคอลัมน์ชื่อ 'โจทย์' อยู่ในไฟล์ Excel");
           return;
         }
 
@@ -147,16 +147,16 @@ const ExamEditor = () => {
           }));
 
         if (newMCQs.length === 0) {
-          alert("❌ ไม่พบข้อสอบที่ถูกต้อง");
+          await showAlert("ไม่พบข้อสอบที่ถูกต้องในไฟล์", "warning");
           return;
         }
 
         console.log("✅ ข้อแรก:", newMCQs[0]);
         setQuestions([...questions, ...newMCQs]);
-        alert(`📥 นำเข้า ${newMCQs.length} ข้อ สำเร็จ!`);
+        await showAlert(`นำเข้าข้อสอบปรนัยสำเร็จ!`, "success", `ระบบนำเข้าข้อสอบจำนวน ${newMCQs.length} ข้อ เรียบร้อยแล้ว`);
       } catch (err) {
         console.error("❌ Error:", err);
-        alert("❌ เกิดข้อผิดพลาด:\n" + err.message);
+        await showAlert("เกิดข้อผิดพลาดในการอ่านไฟล์", "error", err.message);
       }
     };
     reader.readAsBinaryString(file);
@@ -212,15 +212,14 @@ const ExamEditor = () => {
       rubrics: [{ criteria: 'ตอบตรงประเด็นเนื้อหาครบถ้วน', points: 3 }] 
     }]);
   };
-  const removeQuestion = (id) => {
+  const removeQuestion = async (id) => {
     if (questions.length <= 1) {
-      alert("⚠️ ต้องมีข้อสอบอย่างน้อย 1 ข้อในระบบ");
+      await showAlert("ต้องมีข้อสอบอย่างน้อย 1 ข้อในระบบ", "warning");
       return;
     }
     const newQuestions = questions.filter(q => q.id !== id);
     setQuestions(newQuestions);
     
-    // Adjust currentQuestionIdx if needed
     if (currentQuestionIdx >= newQuestions.length) {
       setCurrentQuestionIdx(Math.max(0, newQuestions.length - 1));
     }
@@ -232,17 +231,15 @@ const ExamEditor = () => {
   const addRubric = (qId) => setQuestions(questions.map(q => q.id === qId ? { ...q, rubrics: [...q.rubrics, { criteria: 'เกณฑ์ใหม่', points: 1 }] } : q));
   const removeRubric = (qId, rIdx) => setQuestions(questions.map(q => (q.id === qId && q.rubrics.length > 1) ? { ...q, rubrics: q.rubrics.filter((_, i) => i !== rIdx) } : q));
 
-  // Calculate max score from rubrics for subjective questions (use highest rubric points)
   const getSubjectiveMaxScore = (rubrics) => {
     if (!rubrics || rubrics.length === 0) return 10;
     return Math.max(...rubrics.map(r => parseInt(r.points) || 0));
   };
 
   const handleSave = async () => {
-    if (!metadata.title) return alert("กรุณาระบุชื่อชุดข้อสอบ");
+    if (!metadata.title) return await showAlert("กรุณาระบุชื่อชุดข้อสอบ", "warning");
     setLoading(true);
     try {
-      // Auto-calculate maxScore for subjective questions from rubrics
       const processedQuestions = questions.map(q => {
         if (q.type === 'subjective') {
           return { ...q, maxScore: getSubjectiveMaxScore(q.rubrics) };
@@ -251,8 +248,11 @@ const ExamEditor = () => {
       });
       const examData = { ...metadata, questions: processedQuestions, authorId: user.uid, updatedAt: serverTimestamp(), ...(examId ? {} : { createdAt: serverTimestamp() }) };
       await setDoc(examId ? doc(db, 'exams', examId) : doc(collection(db, 'exams')), examData, { merge: true });
-      alert("✅ บันทึกสำเร็จ!"); navigate('/exam-manager');
-    } catch (e) { alert("เกิดข้อผิดพลาด"); }
+      await showAlert("บันทึกสำเร็จ!", "success", "ชุดข้อสอบของท่านจัดเก็บในคลังเรียบร้อยแล้ว");
+      navigate('/exam-manager');
+    } catch (e) { 
+      await showAlert("เกิดข้อผิดพลาดในการบันทึก", "error", e.message); 
+    }
     setLoading(false);
   };
 
@@ -339,6 +339,19 @@ const ExamEditor = () => {
              </div>
              
              <div className="flex items-center gap-2 self-end lg:self-auto">
+                <button onClick={downloadTemplate} className="px-3 py-2 text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-xl font-black text-[10px] uppercase tracking-wider border border-blue-100 transition-all flex items-center gap-1.5 active:scale-95" title="ดาวน์โหลดไฟล์ตัวอย่าง Excel">
+                  <FileSpreadsheet size={14} /> โหลดเทมเพลต
+                </button>
+                <button onClick={handleExportExcel} className="px-3 py-2 text-emerald-600 bg-emerald-50 hover:bg-emerald-100 rounded-xl font-black text-[10px] uppercase tracking-wider border border-emerald-100 transition-all flex items-center gap-1.5 active:scale-95" title="ส่งออกข้อมูลเป็น Excel">
+                  <FileSpreadsheet size={14} /> ส่งออก Excel
+                </button>
+                <button onClick={() => fileInputRef.current.click()} className="px-3 py-2 text-slate-600 bg-slate-50 hover:bg-slate-100 rounded-xl font-black text-[10px] uppercase tracking-wider border border-slate-200 transition-all flex items-center gap-1.5 active:scale-95" title="นำเข้าข้อสอบจาก Excel">
+                  <Upload size={14} /> นำเข้า Excel
+                </button>
+                <input type="file" ref={fileInputRef} className="hidden" accept=".xlsx" onChange={handleImportExcel} />
+                
+                <div className="hidden md:block h-6 w-[1px] bg-slate-200 mx-1"></div>
+
                 <button onClick={handleSave} disabled={loading} className="bg-green-500 text-white px-5 py-2.5 rounded-xl font-black text-xs shadow-lg hover:bg-green-600 transition-all flex items-center gap-2 active:scale-95 italic uppercase tracking-wider disabled:opacity-50">
                   {loading ? <Loader2 size={14} className="animate-spin" /> : <><Save size={14} /> บันทึกข้อสอบ</>}
                 </button>
@@ -453,18 +466,35 @@ const ExamEditor = () => {
                     <p className="text-xs text-slate-400 font-medium">จัดการข้อคำถามแบบสี่ตัวเลือก พร้อมตัวช่วยนำเข้าจากไฟล์ Excel</p>
                   </div>
                   
-                  {/* Excel Tools inside Step 2 */}
-                  <div className="flex items-center gap-2 self-start md:self-auto">
-                    <button onClick={downloadTemplate} className="p-2.5 text-blue-600 bg-blue-50 rounded-xl hover:bg-blue-100 transition-colors border border-blue-100" title="ดาวน์โหลดไฟล์ตัวอย่าง Excel"><FileSpreadsheet size={16} /></button>
-                    <button onClick={handleExportExcel} className="p-2.5 text-emerald-600 bg-emerald-50 rounded-xl hover:bg-emerald-100 transition-colors border border-emerald-100" title="ส่งออกข้อมูลเป็น Excel"><FileSpreadsheet size={16} /></button>
-                    <button onClick={() => fileInputRef.current.click()} className="p-2.5 text-slate-500 bg-slate-50 rounded-xl hover:bg-slate-100 transition-colors border border-slate-100" title="นำเข้าข้อสอบจาก Excel"><Upload size={16} /></button>
-                    <input type="file" ref={fileInputRef} className="hidden" accept=".xlsx" onChange={handleImportExcel} />
+                  <div className="text-[10px] text-orange-500 bg-orange-50/50 border border-orange-100 px-3 py-1.5 rounded-xl font-black italic uppercase tracking-wider">
+                    จัดการ Excel ได้จากแถบด้านบน
                   </div>
                 </div>
 
+                {/* Drag & Drop Area for Excel inside Step 2 */}
+                <div 
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={async (e) => {
+                    e.preventDefault();
+                    const file = e.dataTransfer.files[0];
+                    if (file && file.name.endsWith('.xlsx')) {
+                      const fakeEvent = { target: { files: [file] } };
+                      handleImportExcel(fakeEvent);
+                    } else {
+                      await showAlert("กรุณาใช้ไฟล์ Excel (.xlsx) เท่านั้น", "error");
+                    }
+                  }}
+                  className="border-2 border-dashed border-slate-200 hover:border-orange-400 hover:bg-orange-50/5 bg-slate-50 p-6 rounded-3xl text-center cursor-pointer transition-all flex flex-col items-center justify-center gap-2 group shadow-inner"
+                  onClick={() => fileInputRef.current.click()}
+                >
+                  <Upload size={24} className="text-orange-400 group-hover:scale-110 transition-transform" />
+                  <div className="text-slate-600 font-black text-xs italic uppercase tracking-wider">ลากวางไฟล์ Excel (.xlsx) ที่นี่เพื่อนำเข้าข้อสอบปรนัยด่วน</div>
+                  <div className="text-[10px] text-slate-400 font-bold">หรือคลิกเพื่อเลือกไฟล์จากคอมพิวเตอร์ของคุณ</div>
+                </div>
+
                 {mcqQuestions.length === 0 ? (
-                  <div className="bg-white p-8 rounded-3xl border border-slate-100 text-center text-slate-400">
-                    ยังไม่มีข้อสอบปรนัยในชุดข้อสอบนี้ กดปุ่มด้านล่างเพื่อเริ่มสร้าง
+                  <div className="bg-white p-8 rounded-3xl border border-slate-100 text-center text-slate-400 font-bold">
+                    ยังไม่มีข้อสอบปรนัยในชุดข้อสอบนี้ กดปุ่มด้านล่างเพื่อเริ่มสร้าง หรือลากวางไฟล์ Excel ด้านบน
                   </div>
                 ) : (
                   <div className="space-y-4">
@@ -479,10 +509,12 @@ const ExamEditor = () => {
                           <div className="flex justify-between items-start mb-4 pl-6">
                             <span className="text-[10px] font-black text-orange-500 bg-orange-50 px-2.5 py-1 rounded-md uppercase tracking-wide italic">ข้อสอบปรนัย</span>
                             <div className="flex items-center gap-2">
-                              <div className="flex items-center gap-1 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-100">
-                                <Award size={12} className="text-orange-500" />
-                                <input type="number" min="1" value={q.maxScore || 1} onChange={e => updateQuestion(q.id, 'maxScore', parseInt(e.target.value) || 1)} className="w-8 bg-transparent font-black text-slate-700 text-xs outline-none text-center" />
-                                <span className="text-[9px] text-slate-400 uppercase">คะแนน</span>
+                              {/* +/- Modifier for Score */}
+                              <div className="flex items-center gap-1.5 bg-slate-50 px-2 py-1 rounded-xl border border-slate-200/50 shadow-inner">
+                                <button type="button" onClick={() => updateQuestion(q.id, 'maxScore', Math.max(1, (q.maxScore || 1) - 1))} className="w-5 h-5 rounded bg-white text-slate-500 flex items-center justify-center hover:bg-orange-100 hover:text-orange-600 transition-colors font-black text-xs cursor-pointer shadow-sm border border-slate-200/55">-</button>
+                                <span className="w-6 text-center font-black text-slate-700 text-xs">{q.maxScore || 1}</span>
+                                <button type="button" onClick={() => updateQuestion(q.id, 'maxScore', (q.maxScore || 1) + 1)} className="w-5 h-5 rounded bg-white text-slate-500 flex items-center justify-center hover:bg-orange-100 hover:text-orange-600 transition-colors font-black text-xs cursor-pointer shadow-sm border border-slate-200/55">+</button>
+                                <span className="text-[9px] text-slate-400 font-bold uppercase tracking-wide pr-1">คะแนน</span>
                               </div>
                               <button onClick={() => removeQuestion(q.id)} className="p-2 text-slate-300 hover:text-red-500 transition-colors" title="ลบคำถาม"><Trash2 size={16} /></button>
                             </div>
@@ -495,9 +527,15 @@ const ExamEditor = () => {
                           <div className="pl-6 grid grid-cols-1 md:grid-cols-2 gap-3">
                             {q.options.map((opt, oIdx) => (
                               <div key={oIdx} className={`relative flex items-center p-1 rounded-xl border-2 transition-all ${q.correctAnswer === oIdx ? 'border-orange-500 bg-orange-50/20' : 'border-slate-50 bg-slate-50'}`}>
-                                <div className={`w-6 h-6 rounded-lg flex items-center justify-center font-black text-[10px] mr-2 ml-1 ${q.correctAnswer === oIdx ? 'bg-orange-500 text-white' : 'bg-white text-slate-300'}`}>{String.fromCharCode(65 + oIdx)}</div>
+                                <button 
+                                  type="button" 
+                                  onClick={() => updateQuestion(q.id, 'correctAnswer', oIdx)} 
+                                  className={`w-6 h-6 rounded-lg flex items-center justify-center font-black text-[10px] mr-2 ml-1 cursor-pointer transition-all hover:scale-105 active:scale-95 ${q.correctAnswer === oIdx ? 'bg-orange-500 text-white' : 'bg-white text-slate-300 border border-slate-200'}`}
+                                >
+                                  {String.fromCharCode(65 + oIdx)}
+                                </button>
                                 <input type="text" value={opt} onChange={e => { const no = [...q.options]; no[oIdx] = e.target.value; updateQuestion(q.id, 'options', no); }} className="flex-1 bg-transparent font-bold text-xs text-slate-700 outline-none py-2" placeholder={`ตัวเลือก ${oIdx + 1}`} />
-                                <button onClick={() => updateQuestion(q.id, 'correctAnswer', oIdx)} className={`p-2 ${q.correctAnswer === oIdx ? 'text-orange-500' : 'text-slate-200 hover:text-slate-400'}`}><CheckCircle2 size={16} /></button>
+                                <button type="button" onClick={() => updateQuestion(q.id, 'correctAnswer', oIdx)} className={`p-2 ${q.correctAnswer === oIdx ? 'text-orange-500' : 'text-slate-200 hover:text-slate-400'}`}><CheckCircle2 size={16} /></button>
                               </div>
                             ))}
                           </div>
@@ -560,13 +598,21 @@ const ExamEditor = () => {
                           <div className="pl-6 bg-orange-50/30 p-4 rounded-2xl border border-orange-100 border-dashed">
                             <div className="flex justify-between items-center mb-3">
                                <span className="text-[10px] font-black text-orange-500 uppercase tracking-widest flex items-center gap-1"><Zap size={12}/> เกณฑ์การให้คะแนนสำหรับการตรวจของ AI</span>
-                               <button onClick={() => addRubric(q.id)} className="text-orange-500 hover:text-orange-700" title="เพิ่มเกณฑ์ย่อย"><PlusCircle size={16} /></button>
+                               <button onClick={() => addRubric(q.id)} className="text-orange-500 hover:text-orange-700 cursor-pointer" title="เพิ่มเกณฑ์ย่อย"><PlusCircle size={16} /></button>
                             </div>
                             <div className="space-y-2">
                                {q.rubrics.map((rub, rIdx) => (
                                  <div key={rIdx} className="flex gap-2 items-center">
                                    <input type="text" value={rub.criteria} onChange={(e) => updateRubric(q.id, rIdx, 'criteria', e.target.value)} className="flex-1 bg-white border border-orange-100 rounded-lg px-3 py-2 text-xs font-bold text-slate-600 outline-none" placeholder="รายละเอียดเกณฑ์การได้คะแนน (เช่น มีคำว่า 'น้ำขึ้นน้ำลง')..." />
-                                   <input type="number" value={rub.points} onChange={(e) => updateRubric(q.id, rIdx, 'points', parseInt(e.target.value) || 0)} className="w-12 bg-white border border-orange-100 rounded-lg px-1 py-2 text-xs font-black text-center text-orange-500 outline-none" />
+                                   
+                                   {/* +/- Modifier for Rubric point */}
+                                   <div className="flex items-center gap-1 bg-white border border-orange-100 rounded-xl px-2 py-1 flex-shrink-0 shadow-sm">
+                                     <button type="button" onClick={() => updateRubric(q.id, rIdx, 'points', Math.max(0, (rub.points || 0) - 1))} className="w-4 h-4 rounded bg-slate-50 text-slate-500 flex items-center justify-center hover:bg-orange-50 hover:text-orange-500 transition-colors font-black text-xs cursor-pointer shadow-sm border border-slate-200/50">-</button>
+                                     <span className="w-6 text-center font-black text-xs text-orange-500">{rub.points || 0}</span>
+                                     <button type="button" onClick={() => updateRubric(q.id, rIdx, 'points', (rub.points || 0) + 1)} className="w-4 h-4 rounded bg-slate-50 text-slate-500 flex items-center justify-center hover:bg-orange-50 hover:text-orange-500 transition-colors font-black text-xs cursor-pointer shadow-sm border border-slate-200/50">+</button>
+                                     <span className="text-[8px] text-orange-400 font-bold uppercase pl-0.5">คะแนน</span>
+                                   </div>
+
                                    {q.rubrics.length > 1 && <button onClick={() => removeRubric(q.id, rIdx)} className="text-slate-300 hover:text-red-400"><MinusCircle size={16} /></button>}
                                  </div>
                                ))}

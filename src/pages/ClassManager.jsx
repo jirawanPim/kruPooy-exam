@@ -6,6 +6,7 @@ import {
   collection, addDoc, onSnapshot, deleteDoc, doc, query, orderBy, serverTimestamp, updateDoc
 } from 'firebase/firestore';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
+import { usePopup } from '../components/PopupProvider';
 import { 
   LayoutDashboard, Users, LogOut, Plus, Trash2, 
   Zap, Sparkles, Search, BookOpen, ShieldCheck, FolderOpen, Edit3, Loader2, Activity, ArrowUpDown, X,
@@ -16,6 +17,7 @@ import * as XLSX from 'xlsx';
 const ClassManager = () => {
   const navigate = useNavigate();
   const location = useLocation();
+  const { showAlert, showConfirm } = usePopup();
   const [user, setUser] = useState(null);
   const [classes, setClasses] = useState([]);
   const [newClassName, setNewClassName] = useState('');
@@ -37,6 +39,8 @@ const ClassManager = () => {
   const [addingStudent, setAddingStudent] = useState(false);
 
   const fileInputRef = useRef(null);
+  const studentNoRef = useRef(null);
+  const studentIdRef = useRef(null);
 
   // Smart sort function that handles class names like "6/1", "6/2", "6/10", "6/11"
   const smartSort = (classesArray, ascending) => {
@@ -129,7 +133,7 @@ const ClassManager = () => {
     e.preventDefault();
     if (!newClassName.trim()) return;
     if (classes.some(c => c.name.toLowerCase() === newClassName.trim().toLowerCase())) {
-      alert("⚠️ มีชื่อห้องเรียนนี้ในระบบแล้ว");
+      await showAlert("มีชื่อห้องเรียนนี้ในระบบแล้ว", "warning");
       return;
     }
     setLoading(true);
@@ -141,20 +145,29 @@ const ClassManager = () => {
       });
       setNewClassName('');
       setSelectedClassId(docRef.id); // Auto-select newly created class
-    } catch (error) { alert("เกิดข้อผิดพลาดในการสร้างห้องเรียน"); }
+    } catch (error) { 
+      await showAlert("เกิดข้อผิดพลาดในการสร้างห้องเรียน", "error"); 
+    }
     setLoading(false);
   };
 
   const handleDeleteClass = async (id, name, e) => {
     e.stopPropagation(); // Prevent class selection trigger when clicking delete button
-    if (window.confirm(`⚠️ ยืนยันการลบห้องเรียน: ${name}?\nข้อมูลนักเรียนทั้งหมดในห้องเรียนนี้จะถูกลบไปด้วย`)) {
+    const isConfirm = await showConfirm(
+      `ยืนยันการลบห้องเรียน: ${name}?`,
+      '⚠️ ข้อมูลนักเรียนทั้งหมดในห้องเรียนนี้จะถูกลบไปด้วยและไม่สามารถกู้คืนได้!'
+    );
+    if (isConfirm) {
       try {
         await deleteDoc(doc(db, 'classes', id));
         if (selectedClassId === id) {
           setSelectedClassId(null);
           setSelectedClass(null);
         }
-      } catch (error) { alert("ไม่สามารถลบห้องเรียนได้"); }
+        await showAlert("ลบห้องเรียนสำเร็จ", "success");
+      } catch (error) { 
+        await showAlert("ไม่สามารถลบห้องเรียนได้", "error"); 
+      }
     }
   };
 
@@ -167,7 +180,6 @@ const ClassManager = () => {
     try {
       const numNo = parseInt(studentNo) || 1;
       
-      // Add student to subcollection
       await addDoc(collection(db, 'classes', selectedClassId, 'students'), {
         no: numNo,
         name: studentName.trim(),
@@ -175,13 +187,20 @@ const ClassManager = () => {
         createdAt: serverTimestamp()
       });
 
-      // Reset form states
+      // Reset form states and auto-increment roll number
       setStudentName('');
-      setStudentNo('');
       setStudentIdCode('');
+      
+      const nextNo = numNo + 1;
+      setStudentNo(nextNo.toString());
+      
+      // Auto-focus next input (Student ID field) for keyboard-friendly entry
+      setTimeout(() => {
+        studentIdRef.current?.focus();
+      }, 50);
     } catch (err) {
       console.error(err);
-      alert("ไม่สามารถเพิ่มข้อมูลนักเรียนได้");
+      await showAlert("ไม่สามารถเพิ่มข้อมูลนักเรียนได้", "error");
     }
     setAddingStudent(false);
   };
@@ -189,12 +208,17 @@ const ClassManager = () => {
   // Delete a single student manually
   const handleDeleteStudent = async (studentId, studentName) => {
     if (!selectedClassId) return;
-    if (window.confirm(`ต้องการลบนักเรียน: ${studentName} ออกจากห้องเรียนนี้หรือไม่?`)) {
+    const isConfirm = await showConfirm(
+      `ต้องการลบนักเรียน: ${studentName}?`,
+      'ข้อมูลประวัติต่างๆ ของนักเรียนคนนี้ในวิชานี้จะถูกลบออกจากฐานข้อมูลห้องเรียน'
+    );
+    if (isConfirm) {
       try {
         await deleteDoc(doc(db, 'classes', selectedClassId, 'students', studentId));
+        await showAlert("ลบข้อมูลนักเรียนสำเร็จ", "success");
       } catch (err) {
         console.error(err);
-        alert("เกิดข้อผิดพลาดในการลบข้อมูลนักเรียน");
+        await showAlert("เกิดข้อผิดพลาดในการลบข้อมูลนักเรียน", "error");
       }
     }
   };
@@ -234,7 +258,7 @@ const ClassManager = () => {
         const data = XLSX.utils.sheet_to_json(ws);
 
         if (data.length === 0) {
-          alert("ไม่พบข้อมูลนักเรียนในไฟล์ Excel");
+          await showAlert("ไม่พบข้อมูลนักเรียนในไฟล์ Excel", "warning");
           return;
         }
 
@@ -257,9 +281,7 @@ const ClassManager = () => {
           }
         });
 
-        // Fallbacks if mapping fails
         if (!nameKey) {
-          // If no clean matching, just pick the first column containing string or containing name
           nameKey = keys.find(k => k.includes('ชื่อ') || k.includes('Name')) || keys[2] || keys[0];
         }
         if (!noKey) {
@@ -270,13 +292,12 @@ const ClassManager = () => {
         }
 
         if (!nameKey) {
-          alert("⚠️ ระบบไม่สามารถค้นหาคอลัมน์ชื่อ-นามสกุลนักเรียนได้ กรุณาตรวจสอบหัวตารางไฟล์ Excel อีกครั้ง");
+          await showAlert("ระบบไม่สามารถค้นหาคอลัมน์ชื่อ-นามสกุลนักเรียนได้", "error", "กรุณาตรวจสอบหัวตารางไฟล์ Excel อีกครั้ง");
           return;
         }
 
         let importedCount = 0;
         
-        // Loop insert to Firestore
         for (const row of data) {
           const rawName = row[nameKey]?.toString().trim();
           if (!rawName) continue;
@@ -298,10 +319,10 @@ const ClassManager = () => {
           importedCount++;
         }
 
-        alert(`📥 นำเข้ารายชื่อนักเรียนสำเร็จทั้งหมด ${importedCount} คน เรียบร้อยแล้ว!`);
+        await showAlert(`นำเข้ารายชื่อนักเรียนสำเร็จ!`, "success", `นำเข้ารายชื่อนักเรียนสำเร็จทั้งหมด ${importedCount} คน เรียบร้อยแล้ว`);
       } catch (err) {
         console.error(err);
-        alert("❌ เกิดข้อผิดพลาดในการประมวลผลไฟล์ Excel:\n" + err.message);
+        await showAlert("เกิดข้อผิดพลาดในการประมวลผลไฟล์ Excel", "error", err.message);
       }
     };
     reader.readAsBinaryString(file);
@@ -555,6 +576,7 @@ const ClassManager = () => {
                         placeholder="เลขที่" 
                         value={studentNo}
                         onChange={e => setStudentNo(e.target.value)}
+                        ref={studentNoRef}
                         className="col-span-1.5 px-2.5 py-2 bg-slate-50 border border-slate-200 rounded-lg font-bold text-slate-700 outline-none focus:border-orange-500 focus:bg-white text-xs text-center"
                         required
                       />
@@ -563,6 +585,7 @@ const ClassManager = () => {
                         placeholder="รหัสประจำตัว" 
                         value={studentIdCode}
                         onChange={e => setStudentIdCode(e.target.value)}
+                        ref={studentIdRef}
                         className="col-span-2 px-2.5 py-2 bg-slate-50 border border-slate-200 rounded-lg font-bold text-slate-700 outline-none focus:border-orange-500 focus:bg-white text-xs"
                       />
                       <input 

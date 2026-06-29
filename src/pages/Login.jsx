@@ -11,9 +11,11 @@ import {
 } from 'lucide-react';
 import { auth, googleProvider } from '../firebase';
 import { signInWithPopup } from 'firebase/auth';
+import { usePopup } from '../components/PopupProvider';
 
 const Login = () => {
   const navigate = useNavigate();
+  const { showAlert } = usePopup();
 
   const handleLogin = async () => {
     try {
@@ -21,7 +23,7 @@ const Login = () => {
       navigate('/dashboard');
     } catch (error) {
       console.error("Login failed:", error);
-      alert("การเข้าสู่ระบบล้มเหลว กรุณาลองใหม่อีกครั้ง");
+      await showAlert("การเข้าสู่ระบบล้มเหลว กรุณาลองใหม่อีกครั้ง", "error");
     }
   };
 
@@ -145,9 +147,13 @@ const Login = () => {
           className="relative z-10 w-full h-full max-h-[85%] rounded-[3rem] overflow-hidden shadow-2xl border-8 border-white/20"
         >
           <img 
-            src="https://scontent.fbkk8-4.fna.fbcdn.net/v/t39.30808-6/471817557_10224850815652239_3780569884177380641_n.jpg?_nc_cat=100&ccb=1-7&_nc_sid=833d8c&_nc_ohc=cDG9fR99-igQ7kNvwEHWzq-&_nc_oc=AdkQRx6slvrhzc6PXu3McVoL-AeW7WkGn-ssYINsN6VxQnDePPEAcZyUfRuwg9e7GOln76NBaMf4WcLxCseSrFyL&_nc_zt=23&_nc_ht=scontent.fbkk8-4.fna&_nc_gid=TENG8N5e-C7pdxoo1jM9dQ&oh=00_AfvBN7KvKehSIBZcJLKEVDrbafl2i49XbtokFQ1tnedhkw&oe=698E067F" 
+            src="/background.jpg" 
             alt="Teacher Work" 
             className="w-full h-full object-cover"
+            onError={(e) => {
+              e.target.onerror = null;
+              e.target.src = 'https://placehold.co/600x400/f97316/ffffff?text=Teacher+Work';
+            }}
           />
           <div className="absolute inset-0 bg-gradient-to-t from-orange-900/60 via-transparent to-transparent" />
           
@@ -155,9 +161,13 @@ const Login = () => {
           <div className="absolute bottom-10 left-10 flex items-center gap-6">
             <div className="w-24 h-24 rounded-full border-4 border-white shadow-2xl overflow-hidden ring-4 ring-orange-500/30">
               <img 
-                src="https://scontent.fbkk12-6.fna.fbcdn.net/v/t39.30808-6/497041656_10225923692833498_2944253091913894108_n.jpg?_nc_cat=109&ccb=1-7&_nc_sid=a5f93a&_nc_ohc=q7kLI6IBafQQ7kNvwH337QK&_nc_oc=AdnwKsHkjzkG_dfV2y2tlk-OGKjN2gdOQR1ntnebPtwLvHfXGMmSKRFtcStzXOpJYd1G9vmow3ECnPezQ1Snr6Qg&_nc_zt=23&_nc_ht=scontent.fbkk12-6.fna&_nc_gid=YLkTnz5e2yZ7TlghsyR81Q&oh=00_Afs-6eLN7gCXIL9zHPBBZ6vf0W_daapXaKpYgFJKv1YXrg&oe=698DBD4A" 
+                src="/profilePicture.jpg" 
                 alt="Teacher Pui" 
                 className="w-full h-full object-cover"
+                onError={(e) => {
+                  e.target.onerror = null;
+                  e.target.src = 'https://placehold.co/150/f97316/ffffff?text=Teacher+Pui';
+                }}
               />
             </div>
             <div className="text-white">

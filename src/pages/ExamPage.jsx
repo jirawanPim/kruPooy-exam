@@ -3,20 +3,23 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { db } from '../firebase';
 import { doc, onSnapshot, updateDoc, increment, getDoc, serverTimestamp } from 'firebase/firestore';
+import { usePopup } from '../components/PopupProvider';
 import { 
-  ShieldAlert, Clock, Send, ChevronLeft, Sparkles, Loader2, AlertTriangle, FileText 
+  ShieldAlert, Clock, Send, ChevronLeft, Sparkles, Loader2, AlertTriangle, FileText, Flag, Activity
 } from 'lucide-react';
 import Groq from 'groq-sdk';
 
 const ExamPage = () => {
   const { state } = useLocation();
   const navigate = useNavigate();
+  const { showAlert, showConfirm } = usePopup();
   
   // States
   const [room, setRoom] = useState(null);
   const [exam, setExam] = useState(null);
   const [student, setStudent] = useState(null);
   const [answers, setAnswers] = useState({});
+  const [flaggedQuestions, setFlaggedQuestions] = useState({}); // { [qIdx]: true }
   const [showCheatModal, setShowCheatModal] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -59,20 +62,20 @@ const ExamPage = () => {
     if (!state?.roomId || !state?.studentId) { navigate('/'); return; }
 
     // ฟังสถานะห้อง (ถ้าจบการสอบ หรือถูกเตะ หรือถูกล็อก)
-    const unsubRoom = onSnapshot(doc(db, 'rooms', state.roomId), (snap) => {
+    const unsubRoom = onSnapshot(doc(db, 'rooms', state.roomId), async (snap) => {
       if (snap.exists()) {
         const rData = snap.data();
         setRoom(rData);
         
         // ✅ ตรวจสอบว่าห้องถูกล็อกหรือไม่
         if (rData.isLocked) {
-          alert("❌ ห้องสอบถูกล็อก คุณไม่สามารถดำเนินการต่อได้");
+          await showAlert("ห้องสอบถูกล็อก คุณไม่สามารถดำเนินการต่อได้", "warning");
           navigate('/');
           return;
         }
         
         if (rData.status === 'finished') {
-          alert("การสอบสิ้นสุดแล้ว");
+          await showAlert("การสอบสิ้นสุดแล้ว", "info");
           navigate('/');
           return;
         }
@@ -80,7 +83,7 @@ const ExamPage = () => {
     });
 
     // ฟังสถานะตัวเอง (โดนเตะ หรือ Cheat Count)
-    const unsubStudent = onSnapshot(doc(db, `rooms/${state.roomId}/attendance/${state.studentId}`), (snap) => {
+    const unsubStudent = onSnapshot(doc(db, `rooms/${state.roomId}/attendance/${state.studentId}`), async (snap) => {
       if (snap.exists()) {
         const sData = snap.data();
         setStudent(sData);
@@ -88,7 +91,7 @@ const ExamPage = () => {
         
         // ถ้าสถานะเป็น kicked ให้เด้งออก
         if (sData.status === 'kicked') {
-          alert("คุณถูกเชิญออกจากห้องสอบ");
+          await showAlert("คุณถูกเชิญออกจากห้องสอบ", "error");
           navigate('/');
         }
       }
@@ -317,7 +320,7 @@ const ExamPage = () => {
             lastCheatReason: 'opened_devtools'
           });
         }
-        alert('❌ ห้ามเปิด Developer Tools');
+        showAlert('ห้ามเปิด Developer Tools', 'error');
       }
     };
 
@@ -412,22 +415,30 @@ ${rubricText}
   };
 
   const handleSubmit = async () => {
-    // Check if all questions are answered
-    const unansweredQuestions = exam.questions.filter((q, idx) => {
+    // ตรวจสอบว่าตอบครบทุกข้อหรือไม่
+    const unansweredQuestions = [];
+    exam.questions.forEach((q, idx) => {
       const answer = answers[idx];
-      if (q.type === 'multiple') {
-        return answer === undefined || answer === '';
-      } else {
-        return answer === undefined || answer === '';
+      if (answer === undefined || answer === '') {
+        unansweredQuestions.push(idx + 1);
       }
     });
 
     if (unansweredQuestions.length > 0) {
-      alert(`⚠️ กรุณาตอบข้อสอบให้ครบก่อนส่ง!\n\nยังเหลือข้อที่ไม่ได้ตอบ: ${unansweredQuestions.map((q, idx) => exam.questions.indexOf(q) + 1).join(', ')}`);
+      await showAlert(
+        'ตอบข้อสอบยังไม่ครบ!',
+        'warning',
+        `กรุณาตอบคำถามให้ครบถ้วนก่อนส่ง (ยังเหลือข้อที่: ${unansweredQuestions.join(', ')})`
+      );
       return;
     }
 
-    if (!window.confirm("ยืนยันการส่งข้อสอบ? \nเมื่อส่งแล้วจะไม่สามารถแก้ไขได้อีก")) return;
+    const isConfirm = await showConfirm(
+      "ยืนยันการส่งข้อสอบ?",
+      "เมื่อส่งข้อสอบแล้ว จะไม่สามารถกลับมาแก้ไขคำตอบได้อีกครั้ง"
+    );
+    if (!isConfirm) return;
+    
     setIsSubmitting(true);
     setIsGradingSubjective(false);
     try {
@@ -435,34 +446,28 @@ ${rubricText}
         status: 'submitted',
         submittedAt: serverTimestamp(),
         answers: answers,
-        // Save the actual exam data student saw (shuffled if randomization enabled)
         examData: exam,
-        // If retrying after cheat, mark as cheating
         ...(isRetry ? { isCheatingSubmission: true, cheatAttemptNumber: cheatAttemptCount } : {})
       });
 
-      // calculate MC scores
       const mcScores = calculateScores({ answers, student });
       setResultScores(mcScores);
       setShowResult(true);
 
-      // Grade subjective answers asynchronously
       setIsGradingSubjective(true);
       const subjectiveScores = await gradeSubjectiveAnswers(originalExam || exam, answers);
       
-      // Update Firestore with subjective scores
       await updateDoc(doc(db, `rooms/${state.roomId}/attendance/${state.studentId}`), {
         subjectiveScores: subjectiveScores,
         aiGradedAt: serverTimestamp()
       });
       
-      // Update result display with full scores (MC + subjective)
       const fullScores = calculateScores({ answers, student: { ...student, subjectiveScores } });
       setResultScores(fullScores);
       setIsGradingSubjective(false);
     } catch (e) {
       console.error(e);
-      alert("เกิดข้อผิดพลาดในการส่งข้อสอบ");
+      await showAlert("เกิดข้อผิดพลาดในการส่งข้อสอบ", "error");
       setIsGradingSubjective(false);
     }
     setIsSubmitting(false);
@@ -530,7 +535,7 @@ ${rubricText}
         
         {/* Timer */}
         <div className="bg-slate-800 text-white px-3 lg:px-4 py-1.5 lg:py-2 rounded-xl flex items-center gap-2 shadow-lg">
-          <Clock size={12} lg:size={16} className="text-orange-400" />
+          <Clock size={12} className="text-orange-400" />
           <span className="font-mono font-black text-xs lg:text-sm tracking-widest">
             {timeLeft !== null ? (
               `${Math.floor(timeLeft / 60).toString().padStart(2, '0')}:${(timeLeft % 60).toString().padStart(2, '0')}`
@@ -540,118 +545,226 @@ ${rubricText}
             {timeLeft === null && <span className="sm:hidden">▶</span>}
           </span>
         </div>
-
       </header>
 
       {/* Exam Content */}
-      <div className="pt-20 lg:pt-24 px-3 lg:px-4 max-w-4xl lg:max-w-3xl mx-auto">
+      <div className="pt-20 lg:pt-24 px-3 lg:px-4 max-w-5xl mx-auto space-y-4">
         {/* Randomization Info */}
         {(room?.randomizeQuestions || room?.randomizeChoices) && (
-          <div className="mb-4 text-center">
+          <div className="text-center">
             <p className="text-[9px] lg:text-xs font-bold text-blue-600 uppercase tracking-wide">
               🔀 ข้อสอบนี้มีการสุ่มลำดับ {room?.randomizeQuestions && room?.randomizeChoices ? '(คำถาม + ตัวเลือก)' : room?.randomizeQuestions ? '(คำถาม)' : '(ตัวเลือก)'}
             </p>
           </div>
         )}
 
-        {/* Per-question pagination */}
+        {/* Progression Bar */}
         {(() => {
           const total = exam.questions.length;
-          const q = exam.questions[currentIndex];
+          const answeredCount = exam.questions.filter((_, idx) => answers[idx] !== undefined && answers[idx] !== '').length;
+          const progressPercent = total > 0 ? (answeredCount / total) * 100 : 0;
           return (
-            <motion.div
-              key={currentIndex}
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.2 }}
-              className="bg-white p-4 lg:p-6 md:p-8 rounded-xl lg:rounded-[2rem] shadow-sm border border-slate-100 relative overflow-hidden"
-            >
-              <div className="absolute top-0 left-0 w-10 h-10 lg:w-12 lg:h-12 bg-slate-50 rounded-br-xl lg:rounded-br-2xl flex items-center justify-center font-black text-slate-300 text-xs lg:text-sm border-r border-b border-slate-100">
-                {currentIndex + 1}
+            <div className="w-full bg-white p-4 rounded-2xl border border-slate-100 shadow-sm">
+              <div className="flex justify-between items-center mb-2">
+                <span className="text-xs font-black text-slate-500 italic">ความคืบหน้าการทำข้อสอบ</span>
+                <span className="text-xs font-black text-orange-600 italic">ตอบแล้ว {answeredCount} จาก {total} ข้อ ({Math.round(progressPercent)}%)</span>
               </div>
-
-              <div className="mt-4 mb-6">
-                <h3 className="text-base lg:text-lg font-bold text-slate-800 leading-relaxed italic">{q.question}</h3>
-                {q.points && <span className="text-[9px] lg:text-[10px] font-black text-orange-400 bg-orange-50 px-2 py-1 rounded-md uppercase tracking-wide mt-2 inline-block">{q.points} คะแนน</span>}
+              <div className="w-full h-3 bg-slate-100 rounded-full overflow-hidden border border-slate-200/50">
+                <motion.div 
+                  initial={{ width: 0 }}
+                  animate={{ width: `${progressPercent}%` }}
+                  transition={{ duration: 0.3 }}
+                  className="h-full bg-gradient-to-r from-orange-500 to-amber-500"
+                />
               </div>
-
-              {q.type === 'multiple' ? (
-                <div className="grid gap-3">
-                  {q.options.map((opt, oIdx) => {
-                    const isSelected = answers[currentIndex] === oIdx;
-                    return (
-                      <button
-                        key={oIdx}
-                        onClick={() => !student?.disqualified && handleAnswer(currentIndex, oIdx)}
-                        disabled={student?.disqualified}
-                        className={`w-full text-left p-3 lg:p-4 rounded-xl border-2 transition-all flex items-center gap-3 group ${
-                          student?.disqualified ? 'opacity-60 cursor-not-allowed' : isSelected
-                            ? 'border-orange-500 bg-orange-50'
-                            : 'border-slate-100 bg-slate-50 hover:bg-white hover:border-orange-200'
-                        }`}
-                      >
-                        <div className={`w-6 h-6 lg:w-8 lg:h-8 rounded-lg flex items-center justify-center font-black text-[10px] lg:text-xs transition-colors ${
-                          isSelected ? 'bg-orange-500 text-white' : 'bg-white text-slate-300 border border-slate-200'
-                        }`}>
-                          {String.fromCharCode(65 + oIdx)}
-                        </div>
-                        <span className={`font-bold text-xs lg:text-sm ${isSelected ? 'text-orange-700' : 'text-slate-600'}`}>{opt}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              ) : (
-                <div className="relative">
-                  <FileText className="absolute top-3 lg:top-4 left-3 lg:left-4 text-slate-300" size={14} lg:size={18} />
-                  <textarea
-                    rows={4} lg:rows={5}
-                    value={answers[currentIndex] || ''}
-                    onChange={(e) => !student?.disqualified && handleAnswer(currentIndex, e.target.value)}
-                    placeholder="พิมพ์คำตอบของคุณที่นี่..."
-                    readOnly={student?.disqualified}
-                    className={`w-full pl-10 lg:pl-12 pr-3 lg:pr-4 py-3 lg:py-4 bg-slate-50 border-2 border-slate-100 rounded-xl lg:rounded-2xl font-bold text-slate-700 text-sm outline-none focus:border-orange-400 focus:bg-white transition-all resize-none leading-relaxed ${student?.disqualified ? 'opacity-60' : ''}`}
-                  />
-                  {!groq && (
-                    <p className="text-[11px] font-bold text-slate-400 mt-1.5 ml-1 italic">
-                      *(ระบบตรวจคำตอบอัตนัยด้วย AI ปิดใช้งานชั่วคราว คุณครูจะเป็นผู้ตรวจให้คะแนนภายหลัง)
-                    </p>
-                  )}
-                </div>
-              )}
-
-              {/* Navigation */}
-              <div className="flex flex-col sm:flex-row items-center justify-between gap-4 mt-6">
-                <button
-                  onClick={() => setCurrentIndex(Math.max(0, currentIndex - 1))}
-                  disabled={currentIndex === 0 || student?.disqualified}
-                  className={`w-full sm:w-auto px-4 py-3 rounded-xl font-black text-sm transition-colors ${currentIndex === 0 || student?.disqualified ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-white border border-slate-200 hover:bg-slate-100'}`}
-                >
-                  ย้อนกลับ
-                </button>
-
-                <div className="text-sm font-black text-slate-500">ข้อที่ {currentIndex + 1} / {total}</div>
-
-                {currentIndex < total - 1 ? (
-                  <button
-                    onClick={() => setCurrentIndex(Math.min(total - 1, currentIndex + 1))}
-                    disabled={student?.disqualified}
-                    className={`w-full sm:w-auto px-4 py-3 rounded-xl font-black text-sm transition-all ${student?.disqualified ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-orange-500 text-white hover:bg-orange-600'}`}
-                  >
-                    ถัดไป
-                  </button>
-                ) : (
-                  <button
-                    onClick={handleSubmit}
-                    disabled={isSubmitting || student?.disqualified}
-                    className={`w-full sm:w-auto px-4 py-3 rounded-xl font-black text-sm transition-all ${isSubmitting || student?.disqualified ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-slate-800 text-white hover:bg-orange-500'}`}
-                  >
-                    {isSubmitting ? 'กำลังส่ง...' : 'ส่งข้อสอบ'}
-                  </button>
-                )}
-              </div>
-            </motion.div>
+            </div>
           );
         })()}
+
+        {/* Responsive Grid Layout: Left Question Card / Right Navigation Panel */}
+        <div className="flex flex-col lg:flex-row gap-6 items-start">
+          
+          {/* Left Panel: Question Card */}
+          <div className="flex-1 w-full min-w-0">
+            {(() => {
+              const total = exam.questions.length;
+              const q = exam.questions[currentIndex];
+              return (
+                <motion.div
+                  key={currentIndex}
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.2 }}
+                  className="bg-white p-4 lg:p-6 md:p-8 rounded-xl lg:rounded-[2rem] shadow-sm border border-slate-100 relative overflow-hidden"
+                >
+                  <div className="absolute top-0 left-0 w-10 h-10 lg:w-12 lg:h-12 bg-slate-50 rounded-br-xl lg:rounded-br-2xl flex items-center justify-center font-black text-slate-300 text-xs lg:text-sm border-r border-b border-slate-100">
+                    {currentIndex + 1}
+                  </div>
+
+                  <div className="mt-4 mb-6">
+                    <h3 className="text-base lg:text-lg font-bold text-slate-800 leading-relaxed italic">{q.question}</h3>
+                    {q.points && <span className="text-[9px] lg:text-[10px] font-black text-orange-400 bg-orange-50 px-2 py-1 rounded-md uppercase tracking-wide mt-2 inline-block">{q.points} คะแนน</span>}
+                  </div>
+
+                  {q.type === 'multiple' ? (
+                    <div className="grid gap-3">
+                      {q.options.map((opt, oIdx) => {
+                        const isSelected = answers[currentIndex] === oIdx;
+                        return (
+                          <button
+                            key={oIdx}
+                            onClick={() => !student?.disqualified && handleAnswer(currentIndex, oIdx)}
+                            disabled={student?.disqualified}
+                            className={`w-full text-left p-3 lg:p-4 rounded-xl border-2 transition-all flex items-center gap-3 group ${
+                              student?.disqualified ? 'opacity-60 cursor-not-allowed' : isSelected
+                                ? 'border-orange-500 bg-orange-50'
+                                : 'border-slate-100 bg-slate-50 hover:bg-white hover:border-orange-200'
+                            }`}
+                          >
+                            <div className={`w-6 h-6 lg:w-8 lg:h-8 rounded-lg flex items-center justify-center font-black text-[10px] lg:text-xs transition-colors ${
+                              isSelected ? 'bg-orange-500 text-white' : 'bg-white text-slate-300 border border-slate-200'
+                            }`}>
+                              {String.fromCharCode(65 + oIdx)}
+                            </div>
+                            <span className={`font-bold text-xs lg:text-sm ${isSelected ? 'text-orange-700' : 'text-slate-600'}`}>{opt}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="relative">
+                      <FileText className="absolute top-3 lg:top-4 left-3 lg:left-4 text-slate-300" size={14} lg:size={18} />
+                      <textarea
+                        rows={4} lg:rows={5}
+                        value={answers[currentIndex] || ''}
+                        onChange={(e) => !student?.disqualified && handleAnswer(currentIndex, e.target.value)}
+                        placeholder="พิมพ์คำตอบของคุณที่นี่..."
+                        readOnly={student?.disqualified}
+                        className={`w-full pl-10 lg:pl-12 pr-3 lg:pr-4 py-3 lg:py-4 bg-slate-50 border-2 border-slate-100 rounded-xl lg:rounded-2xl font-bold text-slate-700 text-sm outline-none focus:border-orange-400 focus:bg-white transition-all resize-none leading-relaxed ${student?.disqualified ? 'opacity-60' : ''}`}
+                      />
+                      {!groq && (
+                        <p className="text-[11px] font-bold text-slate-400 mt-1.5 ml-1 italic">
+                          *(ระบบตรวจคำตอบอัตนัยด้วย AI ปิดใช้งานชั่วคราว คุณครูจะเป็นผู้ตรวจให้คะแนนภายหลัง)
+                        </p>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Navigation */}
+                  <div className="flex flex-col sm:flex-row items-center justify-between gap-4 mt-6">
+                    <button
+                      onClick={() => setCurrentIndex(Math.max(0, currentIndex - 1))}
+                      disabled={currentIndex === 0 || student?.disqualified}
+                      className={`w-full sm:w-auto px-4 py-3 rounded-xl font-black text-sm transition-colors ${currentIndex === 0 || student?.disqualified ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-white border border-slate-200 hover:bg-slate-100'}`}
+                    >
+                      ย้อนกลับ
+                    </button>
+
+                    <div className="flex items-center gap-4">
+                      {/* Flag System Button */}
+                      <button
+                        onClick={() => setFlaggedQuestions(prev => ({ ...prev, [currentIndex]: !prev[currentIndex] }))}
+                        disabled={student?.disqualified}
+                        className={`p-2 rounded-xl border transition-all flex items-center gap-1.5 text-xs font-black ${
+                          flaggedQuestions[currentIndex]
+                            ? 'bg-amber-50 border-amber-300 text-amber-600 shadow-sm animate-pulse'
+                            : 'bg-white border-slate-200 text-slate-400 hover:text-slate-600'
+                        }`}
+                        title="ปักธงข้อนี้เพื่อกลับมาทบทวนภายหลัง"
+                      >
+                        <Flag size={14} className={flaggedQuestions[currentIndex] ? 'fill-amber-500 text-amber-500' : ''} />
+                        <span>{flaggedQuestions[currentIndex] ? 'ปักธงแล้ว' : 'ปักธงทบทวน'}</span>
+                      </button>
+                      
+                      <div className="text-sm font-black text-slate-500">ข้อที่ {currentIndex + 1} / {total}</div>
+                    </div>
+
+                    {currentIndex < total - 1 ? (
+                      <button
+                        onClick={() => setCurrentIndex(Math.min(total - 1, currentIndex + 1))}
+                        disabled={student?.disqualified}
+                        className={`w-full sm:w-auto px-4 py-3 rounded-xl font-black text-sm transition-all ${student?.disqualified ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-orange-500 text-white hover:bg-orange-600'}`}
+                      >
+                        ถัดไป
+                      </button>
+                    ) : (
+                      <button
+                        onClick={handleSubmit}
+                        disabled={isSubmitting || student?.disqualified}
+                        className={`w-full sm:w-auto px-4 py-3 rounded-xl font-black text-sm transition-all ${isSubmitting || student?.disqualified ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'bg-slate-800 text-white hover:bg-orange-500'}`}
+                      >
+                        {isSubmitting ? 'กำลังส่ง...' : 'ส่งข้อสอบ'}
+                      </button>
+                    )}
+                  </div>
+                </motion.div>
+              );
+            })()}
+          </div>
+
+          {/* Right Panel: Question Navigation Grid */}
+          <div className="w-full lg:w-80 flex-shrink-0 bg-white p-6 rounded-3xl border border-slate-100 shadow-sm space-y-4">
+            <div>
+              <h4 className="text-xs font-black text-slate-600 italic tracking-wide uppercase flex items-center gap-1.5 mb-1">
+                <Activity size={14} className="text-orange-500" />
+                แผงควบคุมข้อสอบ
+              </h4>
+              <p className="text-[10px] text-slate-400 font-semibold leading-none">คลิกที่เลขข้อเพื่อข้ามไปยังข้อนั้นทันที</p>
+            </div>
+            
+            <div className="grid grid-cols-5 gap-2.5">
+              {exam.questions.map((q, idx) => {
+                const isCurrent = currentIndex === idx;
+                const isAnswered = answers[idx] !== undefined && answers[idx] !== '';
+                const isFlagged = flaggedQuestions[idx];
+                
+                let btnClass = "w-full aspect-square rounded-xl font-black text-xs transition-all flex flex-col items-center justify-center relative cursor-pointer ";
+                
+                if (isCurrent) {
+                  btnClass += "ring-2 ring-orange-500 bg-white text-orange-600 border border-orange-200 shadow-sm";
+                } else if (isAnswered) {
+                  btnClass += "bg-emerald-500 text-white shadow-sm hover:bg-emerald-600 border border-emerald-500";
+                } else if (isFlagged) {
+                  btnClass += "bg-amber-50 border border-amber-300 text-amber-600 hover:bg-amber-100";
+                } else {
+                  btnClass += "bg-slate-50 text-slate-400 border border-slate-100 hover:bg-slate-100";
+                }
+                
+                return (
+                  <button 
+                    key={idx}
+                    onClick={() => setCurrentIndex(idx)}
+                    disabled={student?.disqualified}
+                    className={btnClass}
+                  >
+                    <span>{idx + 1}</span>
+                    {isFlagged && (
+                      <Flag size={8} className="absolute top-1.5 right-1.5 text-amber-500 fill-amber-500" />
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+            
+            {/* Legend */}
+            <div className="mt-4 pt-4 border-t border-slate-50 space-y-2 text-[10px] font-black text-slate-400 uppercase tracking-wide">
+              <div className="flex items-center gap-2">
+                <div className="w-3.5 h-3.5 rounded-lg bg-emerald-500" />
+                <span>ตอบแล้ว</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="w-3.5 h-3.5 rounded-lg bg-amber-50 border border-amber-300 flex items-center justify-center"><Flag size={8} className="text-amber-500 fill-amber-500" /></div>
+                <span>ปักธงทบทวน</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="w-3.5 h-3.5 rounded-lg bg-slate-50 border border-slate-100" />
+                <span>ยังไม่ได้ทำ</span>
+              </div>
+            </div>
+          </div>
+          
+        </div>
+
 
         
 

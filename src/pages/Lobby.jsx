@@ -1,24 +1,22 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { db } from '../firebase';
 import { collection, query, where, getDocs, onSnapshot, orderBy, addDoc, serverTimestamp, doc } from 'firebase/firestore';
+import { usePopup } from '../components/PopupProvider';
 import { ShieldCheck, User, GraduationCap, ArrowRight, Loader2, Key, Hash, Clock, Sparkles } from 'lucide-react';
 
 const Lobby = () => {
   const navigate = useNavigate();
+  const { showAlert } = usePopup();
   const [loading, setLoading] = useState(false);
   const [isWaiting, setIsWaiting] = useState(false);
 
-  // Auto-redirect to home if accessed directly
-  useEffect(() => {
-    // This page should only be accessed via state from navigation
-    // If there's no proper entry point, redirect to home
-    const timer = setTimeout(() => {
-      // Placeholder for potential redirect logic if needed
-    }, 100);
-    return () => clearTimeout(timer);
-  }, []);
+  // PIN Input elements references
+  const pinRefs = [useRef(null), useRef(null), useRef(null), useRef(null), useRef(null), useRef(null)];
+  const [pin, setPin] = useState(['', '', '', '', '', '']);
+  const [previewRoom, setPreviewRoom] = useState(null);
+  const [searchingPreview, setSearchingPreview] = useState(false);
   
   // Data States
   const [classList, setClassList] = useState([]);
@@ -27,6 +25,58 @@ const Lobby = () => {
 
   // Form State
   const [formData, setFormData] = useState({ name: '', studentNumber: '', className: '', roomCode: '' });
+
+  // PIN onChange and onKeyDown handlers
+  const handlePinChange = (value, idx) => {
+    const newPin = [...pin];
+    newPin[idx] = value.substring(value.length - 1); // limit to single char
+    setPin(newPin);
+    
+    const roomCode = newPin.join('');
+    setFormData(prev => ({ ...prev, roomCode }));
+
+    if (value && idx < 5) {
+      pinRefs[idx + 1].current?.focus();
+    }
+  };
+
+  const handlePinKeyDown = (e, idx) => {
+    if (e.key === 'Backspace' && !pin[idx] && idx > 0) {
+      const newPin = [...pin];
+      newPin[idx - 1] = '';
+      setPin(newPin);
+      setFormData(prev => ({ ...prev, roomCode: newPin.join('') }));
+      pinRefs[idx - 1].current?.focus();
+    }
+  };
+
+  // Preview room details automatically when PIN is full
+  useEffect(() => {
+    const roomCode = pin.join('');
+    if (roomCode.length === 6) {
+      setSearchingPreview(true);
+      const fetchPreview = async () => {
+        try {
+          const q = query(collection(db, 'rooms'), where('roomCode', '==', roomCode.trim()));
+          const snap = await getDocs(q);
+          if (!snap.empty) {
+            setPreviewRoom({ id: snap.docs[0].id, ...snap.docs[0].data() });
+          } else {
+            setPreviewRoom(null);
+            await showAlert("ไม่พบห้องสอบตามรหัสที่ระบุ", "warning");
+          }
+        } catch (err) {
+          console.error(err);
+          setPreviewRoom(null);
+        } finally {
+          setSearchingPreview(false);
+        }
+      };
+      fetchPreview();
+    } else {
+      setPreviewRoom(null);
+    }
+  }, [pin]);
 
   // 1. ดึงรายชื่อห้องเรียนสำหรับ Dropdown
   useEffect(() => {
@@ -40,7 +90,7 @@ const Lobby = () => {
         setClassList(classes);
       } catch (error) {
         console.error('❌ โหลดห้องเรียนล้มเหลว:', error);
-        alert('ไม่สามารถโหลดรายชื่อห้องเรียนได้: ' + error.message);
+        showAlert('ไม่สามารถโหลดรายชื่อห้องเรียนได้: ' + error.message, 'error');
       }
     };
     loadClasses();
@@ -67,7 +117,10 @@ const Lobby = () => {
 
   const handleJoinRoom = async (e) => {
     e.preventDefault();
-    if (!formData.name || !formData.className || !formData.roomCode) return alert("กรุณากรอกข้อมูลให้ครบถ้วน");
+    if (!formData.name || !formData.className || !formData.roomCode) {
+      await showAlert("กรุณากรอกข้อมูลให้ครบถ้วน", "warning");
+      return;
+    }
     
     setLoading(true);
     try {
@@ -76,7 +129,7 @@ const Lobby = () => {
       const querySnapshot = await getDocs(q);
 
       if (querySnapshot.empty) {
-        alert("❌ ไม่พบห้องสอบ");
+        await showAlert("ไม่พบห้องสอบ", "error");
         setLoading(false);
         return;
       }
@@ -86,20 +139,20 @@ const Lobby = () => {
 
       // ✅ ตรวจสอบสถานะห้องและการล็อก
       if (roomDataContent.status === 'finished') {
-        alert("❌ การสอบสิ้นสุดแล้ว ไม่สามารถเข้าได้");
+        await showAlert("การสอบสิ้นสุดแล้ว ไม่สามารถเข้าได้", "error");
         setLoading(false);
         return;
       }
 
       if (roomDataContent.isLocked) {
-        alert("❌ ห้องสอบถูกล็อกอยู่ ไม่สามารถเข้าห้องได้ในขณะนี้");
+        await showAlert("ห้องสอบถูกล็อกอยู่ ไม่สามารถเข้าห้องได้ในขณะนี้", "warning");
         setLoading(false);
         return;
       }
 
       // ✅ ตรวจสอบว่าห้องเรียนตรงกับ targetClass ที่กำหนดไว้
       if (roomDataContent.targetClass && formData.className !== roomDataContent.targetClass) {
-        alert(`❌ ไม่สามารถเข้าได้! ห้องสอบนี้สำหรับห้อง ${roomDataContent.targetClass} เท่านั้น`);
+        await showAlert(`ไม่สามารถเข้าได้! ห้องสอบนี้สำหรับห้อง ${roomDataContent.targetClass} เท่านั้น`, "error");
         setLoading(false);
         return;
       }
@@ -123,7 +176,7 @@ const Lobby = () => {
 
     } catch (error) {
       console.error(error);
-      alert("เกิดข้อผิดพลาดในการเชื่อมต่อ");
+      await showAlert("เกิดข้อผิดพลาดในการเชื่อมต่อ", "error");
     }
     setLoading(false);
   };
@@ -160,20 +213,52 @@ const Lobby = () => {
             </button>
 
              <form onSubmit={handleJoinRoom} className="space-y-5">
-               
-               {/* Room Code */}
-               <div className="relative group">
-                 <div className="absolute left-4 top-1/2 -translate-y-1/2 text-orange-500"><Hash size={20} /></div>
-                 <input 
-                   type="text" 
-                   placeholder="รหัสห้องสอบ (Room Code)" 
-                   value={formData.roomCode}
-                   onChange={e => setFormData({...formData, roomCode: e.target.value})}
-                   className="w-full pl-12 pr-4 py-4 bg-orange-50/50 border-2 border-orange-100 rounded-2xl font-black text-lg text-orange-600 outline-none focus:border-orange-500 focus:bg-white transition-all placeholder:text-orange-300/70 italic text-center tracking-widest"
-                   maxLength={6}
-                   required
-                 />
-               </div>
+                
+                {/* PIN Code Inputs */}
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1 block text-center">ป้อนรหัสห้องสอบ (6 หลัก)</label>
+                  
+                  <div className="flex gap-2 justify-center">
+                    {pin.map((digit, idx) => (
+                      <input
+                        key={idx}
+                        ref={pinRefs[idx]}
+                        type="text"
+                        maxLength={1}
+                        value={digit}
+                        onChange={e => handlePinChange(e.target.value, idx)}
+                        onKeyDown={e => handlePinKeyDown(e, idx)}
+                        className="w-12 h-16 bg-orange-50/50 border-2 border-orange-100 focus:border-orange-500 focus:bg-white rounded-2xl text-center font-black text-xl text-orange-600 outline-none transition-all shadow-inner"
+                        required
+                      />
+                    ))}
+                  </div>
+
+                  {searchingPreview && (
+                    <div className="text-center py-2 flex items-center justify-center gap-2 text-slate-400 text-xs font-bold animate-pulse">
+                      <Loader2 className="animate-spin text-orange-500" size={14} />
+                      <span>กำลังตรวจสอบรหัสห้องสอบ...</span>
+                    </div>
+                  )}
+
+                  {previewRoom && (
+                    <motion.div 
+                      initial={{ opacity: 0, scale: 0.95 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      className="bg-orange-50/40 border border-orange-100 p-4 rounded-2xl shadow-sm text-left relative overflow-hidden"
+                    >
+                      <div className="absolute top-0 right-0 w-16 h-16 bg-orange-500/5 rounded-bl-full" />
+                      <h4 className="text-slate-800 font-black text-xs uppercase italic tracking-wider mb-2 flex items-center gap-1.5">
+                        <Sparkles size={12} className="text-orange-500" /> ข้อมูลห้องสอบ
+                      </h4>
+                      <div className="space-y-1 text-slate-600 text-xs font-bold">
+                        <p className="font-black text-slate-700 italic">📚 ชุดข้อสอบ: {previewRoom.examTitle}</p>
+                        <p>🏫 สำหรับห้องเรียน: {previewRoom.targetClass}</p>
+                        <p className="flex items-center gap-1"><Clock size={12} className="text-slate-400" /> เวลาในการสอบ: {previewRoom.duration} นาที</p>
+                      </div>
+                    </motion.div>
+                  )}
+                </div>
 
                <div className="grid grid-cols-2 gap-4">
                  {/* Name */}

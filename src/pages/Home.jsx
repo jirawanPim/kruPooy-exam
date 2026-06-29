@@ -53,7 +53,10 @@ const Home = () => {
                   src="https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcR6s7EQRb6ajyauH0XNv48gBEZrXA98igZhTg&s" 
                   alt="System Logo" 
                   className="w-full h-full object-cover"
-                  onError={(e) => { e.target.src = 'https://via.placeholder.com/150?text=LOGO'; }}
+                  onError={(e) => { 
+                    e.target.onerror = null; 
+                    e.target.src = 'https://placehold.co/150?text=LOGO'; 
+                  }}
                 />
               </div>
               <div className="absolute -top-1 -right-1 bg-orange-500 text-white p-1.5 rounded-full shadow-lg">
@@ -78,7 +81,10 @@ const Home = () => {
                     src="/profilePicture.jpg" 
                     alt="Teacher Pui" 
                     className="w-full h-full object-cover"
-                    onError={(e) => { e.target.src = 'https://via.placeholder.com/150?text=Teacher'; }}
+                    onError={(e) => { 
+                      e.target.onerror = null; 
+                      e.target.src = 'https://placehold.co/150?text=Teacher'; 
+                    }}
                   />
                 </div>
                 <div className="absolute -bottom-2 -right-2 bg-white p-2 rounded-full shadow-lg border border-orange-100">

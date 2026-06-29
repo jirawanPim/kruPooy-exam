@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { db, auth } from '../firebase';
@@ -6,15 +6,17 @@ import {
   collection, onSnapshot, query, orderBy, deleteDoc, doc, addDoc, serverTimestamp, where 
 } from 'firebase/firestore';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
+import { usePopup } from '../components/PopupProvider';
 import { 
   LayoutDashboard, BookOpen, Users, Edit3, Plus, Trash2, 
-  PlayCircle, Zap, Sparkles, LogOut, ChevronRight,
+  PlayCircle, Zap, Sparkles, LogOut, ChevronRight, Search,
   Clock, ShieldAlert, X, Loader2, FolderOpen, Activity
 } from 'lucide-react';
 
 const TeacherDashboard = () => {
   const navigate = useNavigate();
   const location = useLocation();
+  const { showAlert } = usePopup();
   const [user, setUser] = useState(null);
   const [exams, setExams] = useState([]);
   const [activeRooms, setActiveRooms] = useState([]);
@@ -30,6 +32,29 @@ const TeacherDashboard = () => {
     ignoreCheatCount: false,
     randomizeQuestions: false
   });
+
+  // Search states for dropdowns
+  const [searchExamTerm, setSearchExamTerm] = useState('');
+  const [isExamDropdownOpen, setIsExamDropdownOpen] = useState(false);
+  const [searchClassTerm, setSearchClassTerm] = useState('');
+  const [isClassDropdownOpen, setIsClassDropdownOpen] = useState(false);
+  
+  const examDropdownRef = useRef(null);
+  const classDropdownRef = useRef(null);
+
+  // Close dropdowns on click away
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (examDropdownRef.current && !examDropdownRef.current.contains(event.target)) {
+        setIsExamDropdownOpen(false);
+      }
+      if (classDropdownRef.current && !classDropdownRef.current.contains(event.target)) {
+        setIsClassDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
 
   // ✅ ตั้งค่า User จาก Firebase Auth
   useEffect(() => {
@@ -93,14 +118,17 @@ const TeacherDashboard = () => {
   }, [user]);
 
   const handleCreateRoom = async () => {
-    if (!roomForm.examId || !roomForm.targetClass) return alert("กรุณาระบุข้อมูลให้ครบถ้วน");
+    if (!roomForm.examId || !roomForm.targetClass) {
+      await showAlert("กรุณาระบุข้อมูลให้ครบถ้วน", "warning");
+      return;
+    }
     setLoading(true);
     
     const roomCode = Math.floor(100000 + Math.random() * 900000).toString();
     const selectedExam = exams.find(e => e.id === roomForm.examId);
 
     if (!selectedExam) {
-      alert("❌ ไม่พบข้อมูลชุดข้อสอบที่เลือก กรุณาลองใหม่");
+      await showAlert("ไม่พบข้อมูลชุดข้อสอบที่เลือก กรุณาลองใหม่", "error");
       setLoading(false);
       return;
     }
@@ -117,10 +145,12 @@ const TeacherDashboard = () => {
       });
       setIsModalOpen(false);
       setRoomForm({ examId: '', targetClass: '', duration: 60, maxCheats: 3, ignoreCheatCount: false, randomizeQuestions: false });
-      alert(`✅ สร้างห้องสอบสำเร็จ! รหัสคือ: ${roomCode}`);
+      setSearchExamTerm('');
+      setSearchClassTerm('');
+      await showAlert(`สร้างห้องสอบสำเร็จ! รหัสห้องคือ: ${roomCode}`, "success");
     } catch (e) { 
       console.error("Error creating room:", e);
-      alert("เกิดข้อผิดพลาด: " + e.message); 
+      await showAlert("เกิดข้อผิดพลาด: " + e.message, "error"); 
     }
     setLoading(false);
   };
@@ -294,24 +324,111 @@ const TeacherDashboard = () => {
               </div>
 
               <div className="space-y-4">
-                <div className="space-y-1">
+                {/* Searchable Dropdown for Exam selection */}
+                <div className="space-y-1 relative" ref={examDropdownRef}>
                   <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">เลือกชุดข้อสอบ</label>
-                  <select value={roomForm.examId} onChange={e => setRoomForm({...roomForm, examId: e.target.value})} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-xs outline-none focus:border-orange-500 focus:bg-white transition-all italic text-slate-600 appearance-none">
-                    <option value="">-- กรุณาเลือก --</option>
-                    {exams.map(e => <option key={e.id} value={e.id}>{e.title}</option>)}
-                  </select>
+                  
+                  <div 
+                    onClick={() => setIsExamDropdownOpen(!isExamDropdownOpen)}
+                    className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-xs outline-none focus:border-orange-500 hover:bg-slate-100 transition-all cursor-pointer flex justify-between items-center text-slate-700 italic"
+                  >
+                    <span>
+                      {roomForm.examId 
+                        ? exams.find(e => e.id === roomForm.examId)?.title 
+                        : '-- เลือกชุดข้อสอบ --'}
+                    </span>
+                    <span className="text-[10px] text-slate-450 font-bold uppercase tracking-wider">เลือก</span>
+                  </div>
+
+                  {isExamDropdownOpen && (
+                    <div className="absolute top-[105%] left-0 w-full bg-white border border-slate-100 shadow-xl rounded-2xl p-2.5 z-[110] space-y-2 max-h-56 overflow-y-auto">
+                      <div className="relative">
+                        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-350" size={12} />
+                        <input 
+                          type="text"
+                          placeholder="ค้นหาชุดข้อสอบ..."
+                          value={searchExamTerm}
+                          onChange={(e) => setSearchExamTerm(e.target.value)}
+                          className="w-full pl-8 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold focus:border-orange-300 outline-none"
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                      </div>
+                      <div className="space-y-0.5">
+                        {exams.filter(e => e.title.toLowerCase().includes(searchExamTerm.toLowerCase()) || e.subject.toLowerCase().includes(searchExamTerm.toLowerCase())).length === 0 ? (
+                          <div className="text-center text-slate-400 py-3 font-semibold text-[10px]">ไม่พบข้อสอบที่ตรงกัน</div>
+                        ) : (
+                          exams
+                            .filter(e => e.title.toLowerCase().includes(searchExamTerm.toLowerCase()) || e.subject.toLowerCase().includes(searchExamTerm.toLowerCase()))
+                            .map(e => (
+                              <button
+                                key={e.id}
+                                type="button"
+                                onClick={() => {
+                                  setRoomForm({ ...roomForm, examId: e.id });
+                                  setIsExamDropdownOpen(false);
+                                }}
+                                className="w-full text-left px-3 py-2 rounded-lg text-xs font-bold text-slate-700 hover:bg-orange-50 hover:text-orange-600 transition-colors flex flex-col"
+                              >
+                                <span>{e.title}</span>
+                                <span className="text-[9px] text-slate-400 font-medium">วิชา: {e.subject} | ชั้น: {e.grade}</span>
+                              </button>
+                            ))
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
 
-                <div className="space-y-1">
+                {/* Searchable Dropdown for Class selection */}
+                <div className="space-y-1 relative" ref={classDropdownRef}>
                   <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">เลือกห้องเรียน</label>
-                  <select value={roomForm.targetClass} onChange={e => setRoomForm({...roomForm, targetClass: e.target.value})} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-xs outline-none focus:border-orange-500 focus:bg-white transition-all italic text-slate-600 appearance-none">
-                    <option value="">-- กรุณาเลือก --</option>
-                    {classList.length > 0 ? (
-                      classList.map(c => <option key={c} value={c}>{c}</option>)
-                    ) : (
-                      <option disabled>ไม่มีข้อมูลห้องเรียน</option>
-                    )}
-                  </select>
+                  
+                  <div 
+                    onClick={() => setIsClassDropdownOpen(!isClassDropdownOpen)}
+                    className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-xs outline-none focus:border-orange-500 hover:bg-slate-100 transition-all cursor-pointer flex justify-between items-center text-slate-700 italic"
+                  >
+                    <span>
+                      {roomForm.targetClass ? roomForm.targetClass : '-- เลือกห้องเรียน --'}
+                    </span>
+                    <span className="text-[10px] text-slate-450 font-bold uppercase tracking-wider">เลือก</span>
+                  </div>
+
+                  {isClassDropdownOpen && (
+                    <div className="absolute top-[105%] left-0 w-full bg-white border border-slate-100 shadow-xl rounded-2xl p-2.5 z-[110] space-y-2 max-h-50 overflow-y-auto">
+                      <div className="relative">
+                        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-350" size={12} />
+                        <input 
+                          type="text"
+                          placeholder="ค้นหาห้องเรียน..."
+                          value={searchClassTerm}
+                          onChange={(e) => setSearchClassTerm(e.target.value)}
+                          className="w-full pl-8 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold focus:border-orange-300 outline-none"
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                      </div>
+                      <div className="space-y-0.5">
+                        {classList.filter(c => c.toLowerCase().includes(searchClassTerm.toLowerCase())).length === 0 ? (
+                          <div className="text-center text-slate-400 py-3 font-semibold text-[10px]">ไม่พบห้องเรียนที่ตรงกัน</div>
+                        ) : (
+                          classList
+                            .filter(c => c.toLowerCase().includes(searchClassTerm.toLowerCase()))
+                            .map(c => (
+                              <button
+                                key={c}
+                                type="button"
+                                onClick={() => {
+                                  setRoomForm({ ...roomForm, targetClass: c });
+                                  setIsClassDropdownOpen(false);
+                                }}
+                                className="w-full text-left px-3 py-2 rounded-lg text-xs font-bold text-slate-700 hover:bg-orange-50 hover:text-orange-600 transition-colors"
+                              >
+                                {c}
+                              </button>
+                            ))
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 <div className="grid grid-cols-2 gap-4">
