@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { auth } from './firebase';
-import { onAuthStateChanged } from 'firebase/auth';
+import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { PopupProvider } from './components/PopupProvider';
 
 import Home from './pages/Home';
@@ -20,7 +20,29 @@ const PrivateRoute = ({ children }) => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (u) => { setUser(u); setLoading(false); });
+    const unsubscribe = onAuthStateChanged(auth, async (u) => {
+      if (u) {
+        const email = u.email ? u.email.toLowerCase() : '';
+        const allowedEmails = [
+          'phurin2003@gmail.com',
+          'jirawan@rajsima.ac.th',
+          'jirawan1221@rajsima.ac.th'
+        ];
+        if (allowedEmails.includes(email)) {
+          setUser(u);
+        } else {
+          try {
+            await signOut(auth);
+          } catch (err) {
+            console.error("Signout error in route guard:", err);
+          }
+          setUser(null);
+        }
+      } else {
+        setUser(null);
+      }
+      setLoading(false);
+    });
     return () => unsubscribe();
   }, []);
   if (loading) return <div className="h-screen w-full flex items-center justify-center bg-orange-500 text-white font-black italic">LOADING...</div>;

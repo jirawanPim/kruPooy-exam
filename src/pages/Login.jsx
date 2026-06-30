@@ -10,7 +10,7 @@ import {
   Heart
 } from 'lucide-react';
 import { auth, googleProvider } from '../firebase';
-import { signInWithPopup } from 'firebase/auth';
+import { signInWithPopup, signOut } from 'firebase/auth';
 import { usePopup } from '../components/PopupProvider';
 
 const Login = () => {
@@ -19,8 +19,20 @@ const Login = () => {
 
   const handleLogin = async () => {
     try {
-      await signInWithPopup(auth, googleProvider);
-      navigate('/dashboard');
+      const result = await signInWithPopup(auth, googleProvider);
+      const email = result.user.email ? result.user.email.toLowerCase() : '';
+      const allowedEmails = [
+        'phurin2003@gmail.com',
+        'jirawan@rajsima.ac.th',
+        'jirawan1221@rajsima.ac.th'
+      ];
+      
+      if (allowedEmails.includes(email)) {
+        navigate('/dashboard');
+      } else {
+        await signOut(auth);
+        await showAlert("คุณไม่มีสิทธิ์เข้าใช้งานระบบสำหรับครู", "error");
+      }
     } catch (error) {
       console.error("Login failed:", error);
       await showAlert("การเข้าสู่ระบบล้มเหลว กรุณาลองใหม่อีกครั้ง", "error");
