@@ -268,11 +268,25 @@ const LiveMonitor = () => {
   const handleDeleteRoom = async () => {
     const isConfirm = await showConfirm(
       "ลบห้องสอบนี้ถาวร?",
-      "⚠️ ข้อมูลทั้งหมดรวมถึงประวัติการเข้าเรียนจะสูญหายทันทีและไม่สามารถกู้คืนได้!"
+      "⚠️ ข้อมูลทั้งหมดรวมถึงประวัติการเข้าเรียนของนักเรียนในห้องสอบนี้จะถูกลบออกจากระบบทันทีและไม่สามารถกู้คืนได้!"
     );
     if (isConfirm) {
-      await deleteDoc(doc(db, 'rooms', roomId));
-      navigate('/dashboard');
+      try {
+        // 1. ดึงและลบข้อมูลนักเรียนทั้งหมดในห้องสอบนี้จาก subcollection attendance
+        const attendanceQuery = query(collection(db, `rooms/${roomId}/attendance`));
+        const attendanceSnap = await getDocs(attendanceQuery);
+        for (const studentDoc of attendanceSnap.docs) {
+          await deleteDoc(doc(db, `rooms/${roomId}/attendance/${studentDoc.id}`));
+        }
+        
+        // 2. ลบเอกสารห้องสอบหลัก
+        await deleteDoc(doc(db, 'rooms', roomId));
+        await showAlert('ลบห้องสอบเรียบร้อยแล้ว!', 'success');
+        navigate('/dashboard');
+      } catch (error) {
+        console.error('Error deleting room:', error);
+        await showAlert('เกิดข้อผิดพลาดในการลบห้องสอบ: ' + error.message, 'error');
+      }
     }
   };
 

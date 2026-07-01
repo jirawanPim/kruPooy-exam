@@ -3,7 +3,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { db, auth } from '../firebase';
 import { 
-  collection, onSnapshot, query, orderBy, deleteDoc, doc, addDoc, serverTimestamp, where 
+  collection, onSnapshot, query, orderBy, deleteDoc, doc, addDoc, serverTimestamp, where, getDocs 
 } from 'firebase/firestore';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { usePopup } from '../components/PopupProvider';
@@ -16,7 +16,7 @@ import {
 const TeacherDashboard = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const { showAlert } = usePopup();
+  const { showAlert, showConfirm } = usePopup();
   const [user, setUser] = useState(null);
   const [exams, setExams] = useState([]);
   const [activeRooms, setActiveRooms] = useState([]);
@@ -29,6 +29,7 @@ const TeacherDashboard = () => {
     targetClass: '', 
     duration: 60, 
     maxCheats: 3, 
+    fullscreenGracePeriod: 5,
     ignoreCheatCount: false,
     randomizeQuestions: false
   });
@@ -79,11 +80,9 @@ const TeacherDashboard = () => {
       console.error("❌ Error fetching exams:", error);
     });
 
-    // 2. ดึงห้องสอบ (🔴 แก้ไข: เพิ่ม where เพื่อให้ผ่าน Security Rules)
-    // ใช้ query ระบุเจ้าของห้องทันที เพื่อความชัวร์ในการดึงข้อมูล
+    // 2. ดึงห้องสอบทั้งหมด (ดึงทุกห้องเพื่อให้คุณครูทุกคนเห็นห้องร่วมกัน)
     const roomsQuery = query(
-      collection(db, 'rooms'),
-      where('authorId', '==', user.uid) 
+      collection(db, 'rooms')
     );
 
     const unsubRooms = onSnapshot(roomsQuery, (snap) => {
@@ -117,6 +116,40 @@ const TeacherDashboard = () => {
     return () => { unsubExams(); unsubRooms(); unsubClasses(); };
   }, [user]);
 
+  // บังคับรีเรนเดอร์ทุกๆ 10 วินาทีเพื่อให้เวลาหมดอายุของแต่ละห้องอัปเดตแบบ realtime บน Dashboard
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setActiveRooms(prev => [...prev]);
+    }, 10000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const handleDeleteRoom = async (roomId, roomCode) => {
+    const isConfirm = await showConfirm(
+      `ลบห้องสอบ ${roomCode} ถาวร?`,
+      "⚠️ ข้อมูลทั้งหมดรวมถึงประวัติการเข้าเรียนของนักเรียนในห้องสอบนี้จะถูกลบออกจากระบบทันทีและไม่สามารถกู้คืนได้!"
+    );
+    if (isConfirm) {
+      setLoading(true);
+      try {
+        // 1. ดึงและลบข้อมูลนักเรียนทั้งหมดในห้องสอบนี้จาก subcollection attendance
+        const attendanceQuery = query(collection(db, `rooms/${roomId}/attendance`));
+        const attendanceSnap = await getDocs(attendanceQuery);
+        for (const studentDoc of attendanceSnap.docs) {
+          await deleteDoc(doc(db, `rooms/${roomId}/attendance/${studentDoc.id}`));
+        }
+        
+        // 2. ลบเอกสารห้องสอบหลัก
+        await deleteDoc(doc(db, 'rooms', roomId));
+        await showAlert(`ลบห้องสอบ ${roomCode} เรียบร้อยแล้ว`, "success");
+      } catch (error) {
+        console.error("❌ Error deleting room:", error);
+        await showAlert("เกิดข้อผิดพลาดในการลบห้องสอบ: " + error.message, "error");
+      }
+      setLoading(false);
+    }
+  };
+
   const handleCreateRoom = async () => {
     if (!roomForm.examId || !roomForm.targetClass) {
       await showAlert("กรุณาระบุข้อมูลให้ครบถ้วน", "warning");
@@ -144,7 +177,7 @@ const TeacherDashboard = () => {
         authorId: user.uid
       });
       setIsModalOpen(false);
-      setRoomForm({ examId: '', targetClass: '', duration: 60, maxCheats: 3, ignoreCheatCount: false, randomizeQuestions: false });
+      setRoomForm({ examId: '', targetClass: '', duration: 60, maxCheats: 3, fullscreenGracePeriod: 5, ignoreCheatCount: false, randomizeQuestions: false });
       setSearchExamTerm('');
       setSearchClassTerm('');
       await showAlert(`สร้างห้องสอบสำเร็จ! รหัสห้องคือ: ${roomCode}`, "success");
@@ -258,9 +291,30 @@ const TeacherDashboard = () => {
                 <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4">
                   {activeRooms.map(room => (
                     <motion.div layout key={room.id} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} className="bg-white p-4 lg:p-5 rounded-xl lg:rounded-3xl border border-slate-100 shadow-sm hover:shadow-md transition-all relative overflow-hidden group">
-                      <div className="absolute top-0 right-0 px-2 lg:px-3 py-1 bg-slate-800 rounded-bl-xl lg:rounded-bl-2xl text-[8px] lg:text-[9px] font-black text-white uppercase tracking-widest">
-                        {room.status === 'started' ? 'กำลังสอบ' : 'รอเริ่มสอบ'}
-                      </div>
+                      {(() => {
+                        const expired = room.status === 'started' && room.startTime && room.duration && 
+                          ((room.startTime.seconds ? room.startTime.seconds * 1000 : new Date(room.startTime).getTime()) + room.duration * 60 * 1000 <= Date.now());
+                        
+                        let badgeText = 'รอเริ่มสอบ';
+                        let badgeBg = 'bg-slate-800';
+                        
+                        if (room.status === 'finished') {
+                          badgeText = 'สอบเสร็จสิ้น';
+                          badgeBg = 'bg-blue-500';
+                        } else if (expired) {
+                          badgeText = 'หมดเวลาสอบ';
+                          badgeBg = 'bg-red-500 animate-pulse';
+                        } else if (room.status === 'started') {
+                          badgeText = 'กำลังสอบ';
+                          badgeBg = 'bg-green-600';
+                        }
+                        
+                        return (
+                          <div className={`absolute top-0 right-0 px-2 lg:px-3 py-1 rounded-bl-xl lg:rounded-bl-2xl text-[8px] lg:text-[9px] font-black text-white uppercase tracking-widest ${badgeBg}`}>
+                            {badgeText}
+                          </div>
+                        );
+                      })()}
                       <div className="flex justify-between items-start mb-3">
                         <div>
                            <span className="block text-2xl lg:text-3xl font-black text-slate-800 font-mono tracking-tighter mb-1">{room.roomCode}</span>
@@ -268,9 +322,37 @@ const TeacherDashboard = () => {
                         </div>
                       </div>
                       <h4 className="font-bold text-slate-600 text-xs lg:text-sm mb-4 truncate pr-8">{room.examTitle}</h4>
-                      <button onClick={() => navigate(`/live-monitor/${room.id}`)} className="w-full bg-slate-50 text-slate-500 py-2.5 lg:py-3 rounded-xl font-black text-[9px] lg:text-[10px] uppercase tracking-widest hover:bg-slate-800 hover:text-white transition-all flex items-center justify-center gap-2 group-hover:shadow-lg">
-                        เข้าหน้าคุมสอบ <ChevronRight size={12} lg:size={14} />
-                      </button>
+                      
+                      {(() => {
+                        const expired = room.status === 'started' && room.startTime && room.duration && 
+                          ((room.startTime.seconds ? room.startTime.seconds * 1000 : new Date(room.startTime).getTime()) + room.duration * 60 * 1000 <= Date.now());
+                        const needsClosing = room.status === 'finished' || expired;
+                        
+                        return (
+                          <div className="flex gap-2 w-full">
+                            <button 
+                              onClick={() => navigate(`/live-monitor/${room.id}`)} 
+                              className={`flex-1 py-2.5 lg:py-3 rounded-xl font-black text-[9px] lg:text-[10px] uppercase tracking-widest transition-all flex items-center justify-center gap-2 group-hover:shadow-lg ${
+                                needsClosing 
+                                  ? 'bg-orange-500 text-white hover:bg-orange-600 shadow-md shadow-orange-100' 
+                                  : 'bg-slate-50 text-slate-500 hover:bg-slate-800 hover:text-white'
+                              }`}
+                            >
+                              {needsClosing ? 'ปิดและบันทึกผล' : 'เข้าหน้าคุมสอบ'} <ChevronRight size={12} lg:size={14} />
+                            </button>
+                            <button 
+                              onClick={(e) => { 
+                                e.stopPropagation(); 
+                                handleDeleteRoom(room.id, room.roomCode); 
+                              }} 
+                              className="p-2.5 lg:p-3 text-red-500 hover:text-white bg-red-50 hover:bg-red-500 border border-red-100 rounded-xl transition-all flex items-center justify-center active:scale-95"
+                              title="ลบห้องสอบถาวร"
+                            >
+                              <Trash2 size={14} lg:size={16} />
+                            </button>
+                          </div>
+                        );
+                      })()}
                     </motion.div>
                   ))}
                 </div>
@@ -431,16 +513,21 @@ const TeacherDashboard = () => {
                   )}
                 </div>
 
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-3 gap-3">
                   <div className="space-y-1">
-                    <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1">เวลา (นาที)</label>
-                    <input type="number" value={roomForm.duration} onChange={e => setRoomForm({...roomForm, duration: parseInt(e.target.value)})} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-xs text-center outline-none focus:border-orange-500 transition-all italic" />
+                    <label className="text-[8px] lg:text-[9px] font-black text-slate-400 uppercase tracking-widest ml-1 block truncate">เวลา (นาที)</label>
+                    <input type="number" value={roomForm.duration} onChange={e => setRoomForm({...roomForm, duration: parseInt(e.target.value)})} className="w-full py-3 bg-slate-50 border border-slate-200 rounded-xl font-bold text-xs text-center outline-none focus:border-orange-500 transition-all italic" />
                   </div>
                   <div className="space-y-1">
-                    <label className="text-[9px] font-black text-red-400 uppercase tracking-widest ml-1">สลับจอได้ (ครั้ง)</label>
+                    <label className="text-[8px] lg:text-[9px] font-black text-red-400 uppercase tracking-widest ml-1 block truncate">สลับจอ (ครั้ง)</label>
                     <div className="relative">
-                      <ShieldAlert size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-red-400" />
-                      <input type="number" value={roomForm.maxCheats} onChange={e => setRoomForm({...roomForm, maxCheats: parseInt(e.target.value)})} className="w-full pl-9 pr-4 py-3 bg-red-50 border border-red-100 rounded-xl font-black text-xs text-red-500 text-center outline-none focus:border-red-400 transition-all italic" />
+                      <input type="number" value={roomForm.maxCheats} onChange={e => setRoomForm({...roomForm, maxCheats: parseInt(e.target.value)})} className="w-full py-3 bg-red-50 border border-red-100 rounded-xl font-black text-xs text-red-500 text-center outline-none focus:border-red-400 transition-all italic" />
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[8px] lg:text-[9px] font-black text-orange-400 uppercase tracking-widest ml-1 block truncate">เตือนเต็มจอ (วิ)</label>
+                    <div className="relative">
+                      <input type="number" value={roomForm.fullscreenGracePeriod} onChange={e => setRoomForm({...roomForm, fullscreenGracePeriod: parseInt(e.target.value)})} className="w-full py-3 bg-orange-50 border border-orange-100 rounded-xl font-black text-xs text-orange-500 text-center outline-none focus:border-orange-400 transition-all italic" />
                     </div>
                   </div>
                 </div>

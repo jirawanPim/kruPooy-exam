@@ -32,6 +32,27 @@ const ExamPage = () => {
   const [originalExam, setOriginalExam] = useState(null); // Store original questions for answer checking
   const [inactivityAlert, setInactivityAlert] = useState(false); // Inactivity alert modal state
   const [timeLeft, setTimeLeft] = useState(null); // Countdown timer in seconds
+  const [isFullscreen, setIsFullscreen] = useState(!!(document.fullscreenElement || document.webkitFullscreenElement || document.mozFullScreenElement || document.msFullscreenElement));
+  const hasEnteredFullscreen = React.useRef(false);
+  const [fullscreenCountdown, setFullscreenCountdown] = useState(null);
+
+  const enterFullscreen = async () => {
+    const elem = document.documentElement;
+    try {
+      if (elem.requestFullscreen) {
+        await elem.requestFullscreen();
+      } else if (elem.webkitRequestFullscreen) { /* Safari */
+        await elem.webkitRequestFullscreen();
+      } else if (elem.msRequestFullscreen) { /* IE11 */
+        await elem.msRequestFullscreen();
+      }
+      setIsFullscreen(true);
+      hasEnteredFullscreen.current = true;
+    } catch (err) {
+      console.warn("Fullscreen request denied or failed:", err);
+      showAlert("ไม่สามารถเข้าสู่โหมดเต็มหน้าจอได้ กรุณาลองใหม่อีกครั้ง หรือตรวจสอบสิทธิ์ของเบราว์เซอร์", "error");
+    }
+  };
 
   // Groq client safety initialization
   const groqApiKey = import.meta.env.VITE_GROQ_API_KEY;
@@ -61,24 +82,22 @@ const ExamPage = () => {
   useEffect(() => {
     if (!state?.roomId || !state?.studentId) { navigate('/'); return; }
 
-    // ฟังสถานะห้อง (ถ้าจบการสอบ หรือถูกเตะ หรือถูกล็อก)
+    // ฟังสถานะห้อง (ถ้าจบการสอบ หรือถูกเตะ หรือห้องถูกลบ)
     const unsubRoom = onSnapshot(doc(db, 'rooms', state.roomId), async (snap) => {
       if (snap.exists()) {
         const rData = snap.data();
         setRoom(rData);
-        
-        // ✅ ตรวจสอบว่าห้องถูกล็อกหรือไม่
-        if (rData.isLocked) {
-          await showAlert("ห้องสอบถูกล็อก คุณไม่สามารถดำเนินการต่อได้", "warning");
-          navigate('/');
-          return;
-        }
         
         if (rData.status === 'finished') {
           await showAlert("การสอบสิ้นสุดแล้ว", "info");
           navigate('/');
           return;
         }
+      } else {
+        // กรณีที่เอกสารห้องสอบถูกลบออกจากฐานข้อมูล
+        await showAlert("ห้องสอบนี้ถูกลบแล้ว คุณจะถูกนำออกจากห้องสอบ", "error");
+        navigate('/');
+        return;
       }
     });
 
@@ -190,32 +209,65 @@ const ExamPage = () => {
     }
   }, [room]);
 
-  // 3. Anti-Cheat System (Core Logic) - Tab Visibility Detection
+  // 3. Anti-Cheat System (Core Logic) - Tab Visibility & Focus/Blur Detection
   useEffect(() => {
-    const handleVisibilityChange = () => {
-      // If room is set to ignore cheat count, do nothing
-      if (room?.ignoreCheatCount) return;
+    let lastTrigger = 0;
+    
+    const triggerCheat = async (reason) => {
+      const now = Date.now();
+      // ป้องกันการบวกคะแนนทุจริตซ้ำซ้อนภายในเวลา 3 วินาที
+      if (now - lastTrigger < 3000) return;
+      lastTrigger = now;
 
-      if (document.hidden && state?.roomId && state?.studentId) {
-        // อัปเดต Cheat Count ทันที
-        updateDoc(doc(db, `rooms/${state.roomId}/attendance/${state.studentId}`), {
+      if (room?.ignoreCheatCount) return;
+      if (!state?.roomId || !state?.studentId || student?.disqualified) return;
+
+      try {
+        await updateDoc(doc(db, `rooms/${state.roomId}/attendance/${state.studentId}`), {
           cheatCount: increment(1),
-          isTabSwitched: true
+          isTabSwitched: true,
+          lastCheatReason: reason
         });
         setShowCheatModal(true);
+      } catch (err) {
+        console.error('Error recording tab/window cheat:', err);
+      }
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        triggerCheat('tab_hidden');
       } else {
-        // กลับมาหน้าจอปกติ
         if (state?.roomId && state?.studentId) {
-           updateDoc(doc(db, `rooms/${state.roomId}/attendance/${state.studentId}`), {
+          updateDoc(doc(db, `rooms/${state.roomId}/attendance/${state.studentId}`), {
             isTabSwitched: false
-          });
+          }).catch(() => {});
         }
       }
     };
 
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
-  }, [state, room]);
+    const handleWindowBlur = () => {
+      triggerCheat('window_blurred');
+    };
+
+    const handleWindowFocus = () => {
+      if (state?.roomId && state?.studentId) {
+        updateDoc(doc(db, `rooms/${state.roomId}/attendance/${state.studentId}`), {
+          isTabSwitched: false
+        }).catch(() => {});
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('blur', handleWindowBlur);
+    window.addEventListener('focus', handleWindowFocus);
+
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('blur', handleWindowBlur);
+      window.removeEventListener('focus', handleWindowFocus);
+    };
+  }, [state, room, student?.disqualified]);
 
   // 3b. Anti-Cheat System - Tab/Window Close Detection
   useEffect(() => {
@@ -242,38 +294,74 @@ const ExamPage = () => {
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, [state, room]);
 
-  // 3c. Anti-Cheat: Full-screen Enforcement
+  // 3c. Anti-Cheat: Full-screen Enforcement & Grace Period Timer
   useEffect(() => {
     const handleFullscreenChange = () => {
-      if (room?.ignoreCheatCount) return;
+      const activeFullscreen = !!(
+        document.fullscreenElement ||
+        document.webkitFullscreenElement ||
+        document.mozFullScreenElement ||
+        document.msFullscreenElement
+      );
       
-      // If fullscreen exited, count as cheat
-      if (!document.fullscreenElement && state?.roomId && state?.studentId && !student?.disqualified) {
+      setIsFullscreen(activeFullscreen);
+
+      if (room?.ignoreCheatCount) return;
+
+      // หากหลุดจาก Fullscreen และเคยเข้าโหมด Fullscreen ไปแล้วอย่างน้อย 1 ครั้ง
+      if (!activeFullscreen && hasEnteredFullscreen.current && state?.roomId && state?.studentId && !student?.disqualified) {
         updateDoc(doc(db, `rooms/${state.roomId}/attendance/${state.studentId}`), {
           cheatCount: increment(1),
           lastCheatReason: 'exited_fullscreen'
-        });
+        }).catch(err => console.error('Error updating cheat count (fullscreen):', err));
+        
         setShowCheatModal(true);
+        // เริ่มต้นนับถอยหลัง Grace Period
+        setFullscreenCountdown(room?.fullscreenGracePeriod ?? 5);
+      } else if (activeFullscreen) {
+        // หากกลับมาเข้า Fullscreen ได้สำเร็จ ให้หยุดการนับถอยหลัง
+        setFullscreenCountdown(null);
       }
     };
-
-    // Request fullscreen on component mount (optional - can be made optional)
-    const requestFullscreen = async () => {
-      try {
-        if (document.documentElement.requestFullscreen) {
-          await document.documentElement.requestFullscreen();
-        }
-      } catch (err) {
-        console.warn('Fullscreen request denied:', err);
-      }
-    };
-
-    // Uncomment to enforce fullscreen:
-    // requestFullscreen();
 
     document.addEventListener('fullscreenchange', handleFullscreenChange);
-    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
-  }, [state, room, student]);
+    document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
+    document.addEventListener('mozfullscreenchange', handleFullscreenChange);
+    document.addEventListener('MSFullscreenChange', handleFullscreenChange);
+
+    return () => {
+      document.removeEventListener('fullscreenchange', handleFullscreenChange);
+      document.removeEventListener('webkitfullscreenchange', handleFullscreenChange);
+      document.removeEventListener('mozfullscreenchange', handleFullscreenChange);
+      document.removeEventListener('MSFullscreenChange', handleFullscreenChange);
+    };
+  }, [state, room, student?.disqualified]);
+
+  // เอฟเฟกต์สำหรับนับถอยหลังกรณีหลุดจาก Fullscreen
+  useEffect(() => {
+    if (isFullscreen || fullscreenCountdown === null || room?.status !== 'started') {
+      return;
+    }
+
+    const timer = setInterval(async () => {
+      setFullscreenCountdown(prev => {
+        if (prev <= 1) {
+          // เมื่อหมดเวลานับถอยหลัง (เหลือ 0)
+          if (state?.roomId && state?.studentId && !student?.disqualified) {
+            updateDoc(doc(db, `rooms/${state.roomId}/attendance/${state.studentId}`), {
+              cheatCount: increment(1),
+              lastCheatReason: 'fullscreen_grace_timeout'
+            }).catch(err => console.error('Error updating grace timeout cheat:', err));
+          }
+          // รีเซ็ตเวลากลับไปเริ่มต้นใหม่เพื่อวนลูปรอบถัดไป
+          return room?.fullscreenGracePeriod ?? 5;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [isFullscreen, fullscreenCountdown, room, state, student?.disqualified]);
 
   // 3d. Anti-Cheat: Disable Copy-Paste (silent block)
   useEffect(() => {
@@ -903,6 +991,40 @@ ${rubricText}
                  className="w-full py-3 bg-red-500 text-white rounded-xl font-black uppercase tracking-widest text-xs hover:bg-red-600 transition-colors"
                >
                  รับทราบ
+               </button>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Fullscreen Enforcer Overlay */}
+      <AnimatePresence>
+        {!isFullscreen && room?.status === 'started' && !student?.disqualified && !cheatLimitReached && !showResult && (
+          <div className="fixed inset-0 bg-slate-900/90 backdrop-blur-md z-[80] flex items-center justify-center p-6 text-center">
+            <motion.div 
+              initial={{ scale: 0.9, opacity: 0 }} 
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.9, opacity: 0 }}
+              className="bg-white p-8 lg:p-12 rounded-[2.5rem] max-w-md w-full relative overflow-hidden shadow-2xl border border-slate-100"
+            >
+               <div className="absolute top-0 left-0 w-full h-2 bg-orange-500 animate-pulse" />
+               <ShieldAlert size={64} className="text-orange-500 mx-auto mb-6 animate-pulse" />
+               <h2 className="text-2xl font-black text-slate-800 uppercase italic mb-3">จำเป็นต้องเปิดโหมดเต็มหน้าจอ</h2>
+               
+               {fullscreenCountdown !== null && (
+                 <div className="bg-red-50 text-red-600 px-4 py-2.5 rounded-2xl border border-red-100 font-black text-sm mb-4 animate-pulse">
+                   ⚠️ กรุณากลับเข้าเต็มจอภายใน {fullscreenCountdown} วินาที
+                 </div>
+               )}
+
+               <p className="text-slate-500 text-xs font-bold mb-8">
+                 เพื่อรักษาความโปร่งใสในการสอบ กรุณากดปุ่มด้านล่างเพื่อเข้าสู่โหมดเต็มหน้าจอ หากคุณไม่ยอมเข้าโหมดเต็มหน้าจอภายในเวลาที่กำหนด คะแนนทุจริตจะเพิ่มขึ้นเรื่อย ๆ
+               </p>
+               <button 
+                 onClick={enterFullscreen}
+                 className="w-full py-4 bg-orange-500 text-white rounded-xl font-black uppercase tracking-widest text-sm hover:bg-orange-600 transition-colors shadow-lg shadow-orange-500/20"
+               >
+                 เข้าสู่โหมดเต็มหน้าจอ
                </button>
             </motion.div>
           </div>
